@@ -13,13 +13,12 @@ You are a Senior Go Engineer tasked with building **vanish**, a "Zero-Footprint"
 ## 1. Minimalist Library Policy
 Only write custom functions if the following libraries do not provide direct methods:
 - **Networking:** `tailscale.com/tsnet` (Embedded VPN)
-- **Secrets:** `github.com/bitwarden/sdk-go` 
+- **Secrets:** `github.com/zalando/go-keyring` (System Keychain)
 - **Sync:** `github.com/rclone/rclone` (Strictly target: `fs/sync` and `backend/sftp`)
-- **Storage:** `github.com/zalando/go-keyring` (System Keychain)
 
 ## 2. Technical Constraints
 - **Zero-Footprint:** Secrets must never be written to disk.
-- **Master Key:** The Bitwarden token resides ONLY in the System Keychain.
+- **Secure Storage:** Credentials are stored in System Keychain (Windows Credential Manager, macOS Keychain, Linux keyring).
 - **Networking:** `tsnet.Server` must be `Ephemeral: true`.
 - **Modularity:** Constants must be organized by domain (e.g., `network/constants.go`, `vault/constants.go`).
 - **Dependency Injection:** Wrap external SDKs in interfaces to allow for mocking.
@@ -40,12 +39,11 @@ The project must include a `Makefile` with these targets:
 - `build`: Compile to a static binary
 
 ## 5. MVP Feature Set & Implementation Logic
-- **Feature A (Setup):** Securely prompt for Bitwarden Access Token and store in `go-keyring`.
-- **Feature B (Sync):** 1. Authenticate with Bitwarden using keychain token.
-    2. Fetch `TS_AUTHKEY` and `NAS_CREDS` from vault.
-    3. Initialize `tsnet.Server` (Ephemeral).
-    4. Bridge `rclone` SFTP to `tsnet` dialer (inject `srv.Dial` into SFTP transport).
-    5. Execute `sync.Sync` for jobs defined in `config.yaml`.
+- **Feature A (Setup):** Securely prompt for Tailscale auth key and NAS credentials, storing them in system keyring via `go-keyring`.
+- **Feature B (Sync):** 1. Fetch `TS_AUTHKEY` and `NAS_CREDS` from system keyring (fallback to environment variables).
+    2. Initialize `tsnet.Server` (Ephemeral).
+    3. Bridge `rclone` SFTP to `tsnet` dialer (inject `srv.Dial` into SFTP transport).
+    4. Execute `sync.Sync` for jobs defined in `config.yaml`.
 
 ## 6. Workflow Instructions (The TDD Cycle)
 You must follow the **Red-Green-Refactor** pattern for every feature:

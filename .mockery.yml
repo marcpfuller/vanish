@@ -15,7 +15,6 @@ packages:
   github.com/bdkmv/vanish/internal/vault:
     interfaces:
       SecretStore:
-      BitwardenClient:
   github.com/bdkmv/vanish/internal/network:
     interfaces:
       TailscaleProvider:

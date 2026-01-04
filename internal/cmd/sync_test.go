@@ -1,360 +1,410 @@
-package cmd_test
+package cmd
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
-	"github.com/bdkmv/vanish/internal/cmd"
+	"github.com/bdkmv/vanish/internal/sync"
 	"github.com/bdkmv/vanish/internal/vault"
 	"github.com/bdkmv/vanish/mocks"
+	"github.com/bdkmv/vanish/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
-func TestSync_NoToken(t *testing.T) {
-	// Create mock store that returns "not found" for token
+func TestSync_Success(t *testing.T) {
+	// Create mocks
 	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("", vault.ErrSecretNotFound)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
 
-	mockBW := mocks.NewMockBitwardenClient(t)
-	vaultService := vault.NewVaultService(mockStore, mockBW)
+	// Setup vault service
+	vaultSvc := vault.NewVaultService(mockStore)
 
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockSyncSvc := mocks.NewMockSyncService(t)
+	// Mock expectations - credentials from keyring
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("tskey-test-12345", nil).Once()
+	mockStore.EXPECT().Get(mock.Anything, "NAS_CREDS").
+		Return("testuser:testpass", nil).Once()
 
-	opts := cmd.SyncOptions{
-		ConfigPath: "test-config.yaml",
-		Timeout:    5 * time.Second,
+	// Mock Tailscale expectations
+	mockTS.EXPECT().Start(mock.Anything, "tskey-test-12345", "vanish-backup").
+		Return(nil).Once()
+	mockTS.EXPECT().LocalAddr().
+		Return("100.64.0.1", nil).Once()
+	mockTS.EXPECT().Close().
+		Return(nil).Once()
+
+	// Mock sync expectations
+	mockSync.EXPECT().Sync(mock.Anything, mock.MatchedBy(func(job sync.SyncJob) bool {
+		return job.Name == "test-backup" &&
+			job.Source == "/tmp/source" &&
+			job.Destination == "sftp://testuser:testpass@nas.local:22/backup"
+	})).Return(nil).Once()
+
+	// Create temporary config file
+	tmpConfig := t.TempDir() + "/config.yaml"
+	cfg := &config.Config{
+		SyncJobs: []config.SyncJob{
+			{
+				Name:        "test-backup",
+				Source:      "/tmp/source",
+				Destination: "sftp://nas.local:22/backup",
+				Enabled:     true,
+			},
+		},
+	}
+	require.NoError(t, config.Save(tmpConfig, cfg))
+
+	// Execute sync
+	opts := SyncOptions{
+		ConfigPath: tmpConfig,
+		Timeout:    30 * time.Second,
 	}
 
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "secret not found")
-}
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
 
-func TestSync_AuthenticationFails(t *testing.T) {
-	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
-
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(assert.AnError)
-
-	vaultService := vault.NewVaultService(mockStore, mockBW)
-
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockSyncSvc := mocks.NewMockSyncService(t)
-
-	opts := cmd.SyncOptions{
-		ConfigPath: "test-config.yaml",
-		Timeout:    5 * time.Second,
-	}
-
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to authenticate")
-}
-
-func TestSync_MissingTailscaleKey(t *testing.T) {
-	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
-
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.TailscaleAuthKeyItem).
-		Return("", assert.AnError)
-
-	vaultService := vault.NewVaultService(mockStore, mockBW)
-
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockSyncSvc := mocks.NewMockSyncService(t)
-
-	opts := cmd.SyncOptions{
-		ConfigPath: "test-config.yaml",
-		Timeout:    5 * time.Second,
-	}
-
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "Tailscale")
-}
-
-func TestSync_MissingNASCreds(t *testing.T) {
-	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
-
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.TailscaleAuthKeyItem).
-		Return("tskey-auth-xxxxx", nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.NASCredsItem).
-		Return("", assert.AnError)
-
-	vaultService := vault.NewVaultService(mockStore, mockBW)
-
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockSyncSvc := mocks.NewMockSyncService(t)
-
-	opts := cmd.SyncOptions{
-		ConfigPath: "test-config.yaml",
-		Timeout:    5 * time.Second,
-	}
-
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "NAS")
-}
-
-func TestSync_InvalidNASCredsFormat(t *testing.T) {
-	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
-
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.TailscaleAuthKeyItem).
-		Return("tskey-auth-xxxxx", nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.NASCredsItem).
-		Return("invalid-format-no-colon", nil)
-
-	vaultService := vault.NewVaultService(mockStore, mockBW)
-
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockSyncSvc := mocks.NewMockSyncService(t)
-
-	opts := cmd.SyncOptions{
-		ConfigPath: "test-config.yaml",
-		Timeout:    5 * time.Second,
-	}
-
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "credential")
-}
-
-func TestSync_ConfigFileNotFound(t *testing.T) {
-	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
-
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.TailscaleAuthKeyItem).
-		Return("tskey-auth-xxxxx", nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.NASCredsItem).
-		Return("user:pass", nil)
-
-	vaultService := vault.NewVaultService(mockStore, mockBW)
-
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockTsProvider.EXPECT().Start(mock.Anything, "tskey-auth-xxxxx", mock.Anything).
-		Return(nil)
-	mockTsProvider.EXPECT().LocalAddr().Return("100.64.0.1", nil)
-	mockTsProvider.EXPECT().Close().Return(nil)
-
-	mockSyncSvc := mocks.NewMockSyncService(t)
-
-	opts := cmd.SyncOptions{
-		ConfigPath: "/nonexistent/config.yaml",
-		Timeout:    1 * time.Second,
-	}
-
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
-	assert.Error(t, err)
-	// Will fail when trying to load config file
-	assert.Contains(t, err.Error(), "config")
-}
-
-func TestSyncOptions_DefaultTimeout(t *testing.T) {
-	opts := cmd.SyncOptions{
-		ConfigPath: "test.yaml",
-		Timeout:    0,
-	}
-
-	// Verify options can be created
-	assert.Equal(t, "test.yaml", opts.ConfigPath)
-}
-
-func TestSync_SuccessfulSync(t *testing.T) {
-	// Setup mocks for successful path
-	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
-
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.TailscaleAuthKeyItem).
-		Return("tskey-auth-xxxxx", nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.NASCredsItem).
-		Return("testuser:testpass", nil)
-
-	vaultService := vault.NewVaultService(mockStore, mockBW)
-
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockTsProvider.EXPECT().Start(mock.Anything, "tskey-auth-xxxxx", "vanish-backup").
-		Return(nil)
-	mockTsProvider.EXPECT().LocalAddr().Return("100.64.0.5", nil)
-	mockTsProvider.EXPECT().Close().Return(nil)
-
-	mockSyncSvc := mocks.NewMockSyncService(t)
-	// Expect Sync to be called for each enabled job (2 jobs in valid_config.yaml)
-	mockSyncSvc.EXPECT().Sync(mock.Anything, mock.MatchedBy(func(job interface{}) bool {
-		// Accept any sync job
-		return true
-	})).Return(nil).Times(2)
-
-	opts := cmd.SyncOptions{
-		ConfigPath: "testdata/valid_config.yaml",
-		Timeout:    5 * time.Second,
-	}
-
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
+	// Assert
 	assert.NoError(t, err)
 }
 
 func TestSync_NoEnabledJobs(t *testing.T) {
-	// Create a config with no enabled jobs
+	// Create mocks
 	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
 
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.TailscaleAuthKeyItem).
-		Return("tskey-auth-xxxxx", nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.NASCredsItem).
-		Return("testuser:testpass", nil)
+	vaultSvc := vault.NewVaultService(mockStore)
 
-	vaultService := vault.NewVaultService(mockStore, mockBW)
+	// Mock expectations
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("tskey-test-12345", nil).Once()
+	mockStore.EXPECT().Get(mock.Anything, "NAS_CREDS").
+		Return("testuser:testpass", nil).Once()
+	mockTS.EXPECT().Start(mock.Anything, "tskey-test-12345", "vanish-backup").
+		Return(nil).Once()
+	mockTS.EXPECT().LocalAddr().
+		Return("100.64.0.1", nil).Once()
+	mockTS.EXPECT().Close().
+		Return(nil).Once()
 
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockTsProvider.EXPECT().Start(mock.Anything, "tskey-auth-xxxxx", mock.Anything).
-		Return(nil)
-	mockTsProvider.EXPECT().LocalAddr().Return("100.64.0.5", nil)
-	mockTsProvider.EXPECT().Close().Return(nil)
+	// Create config with disabled jobs
+	tmpConfig := t.TempDir() + "/config.yaml"
+	cfg := &config.Config{
+		SyncJobs: []config.SyncJob{
+			{
+				Name:        "disabled-backup",
+				Source:      "/tmp/source",
+				Destination: "sftp://nas.local:22/backup",
+				Enabled:     false,
+			},
+		},
+	}
+	require.NoError(t, config.Save(tmpConfig, cfg))
 
-	mockSyncSvc := mocks.NewMockSyncService(t)
-	// No Sync calls expected since all jobs are disabled
-
-	opts := cmd.SyncOptions{
-		ConfigPath: "testdata/no_enabled_jobs.yaml",
-		Timeout:    5 * time.Second,
+	opts := SyncOptions{
+		ConfigPath: tmpConfig,
+		Timeout:    30 * time.Second,
 	}
 
-	// This should succeed with a warning but no error
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
+
+	// Should succeed with no jobs run
 	assert.NoError(t, err)
 }
 
-func TestSync_TailscaleStartFails(t *testing.T) {
+func TestSync_FailedToGetAuthKey(t *testing.T) {
 	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
 
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.TailscaleAuthKeyItem).
-		Return("tskey-auth-xxxxx", nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.NASCredsItem).
-		Return("testuser:testpass", nil)
+	vaultSvc := vault.NewVaultService(mockStore)
 
-	vaultService := vault.NewVaultService(mockStore, mockBW)
+	// Mock auth key failure
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("", fmt.Errorf("keyring error")).Once()
 
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockTsProvider.EXPECT().Start(mock.Anything, "tskey-auth-xxxxx", "vanish-backup").
-		Return(assert.AnError)
-	mockTsProvider.EXPECT().Close().Return(nil) // defer will call Close even on error
+	tmpConfig := t.TempDir() + "/config.yaml"
+	cfg := &config.Config{SyncJobs: []config.SyncJob{}}
+	require.NoError(t, config.Save(tmpConfig, cfg))
 
-	mockSyncSvc := mocks.NewMockSyncService(t)
-
-	opts := cmd.SyncOptions{
-		ConfigPath: "testdata/valid_config.yaml",
-		Timeout:    5 * time.Second,
+	opts := SyncOptions{
+		ConfigPath: tmpConfig,
+		Timeout:    30 * time.Second,
 	}
 
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
+
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "Tailscale")
+	assert.Contains(t, err.Error(), "failed to get Tailscale auth key")
 }
 
-func TestSync_LocalAddrFails(t *testing.T) {
+func TestSync_FailedToGetNASCreds(t *testing.T) {
 	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
 
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.TailscaleAuthKeyItem).
-		Return("tskey-auth-xxxxx", nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.NASCredsItem).
-		Return("testuser:testpass", nil)
+	vaultSvc := vault.NewVaultService(mockStore)
 
-	vaultService := vault.NewVaultService(mockStore, mockBW)
+	// Mock successful auth key but failed NAS creds
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("tskey-test-12345", nil).Once()
+	mockStore.EXPECT().Get(mock.Anything, "NAS_CREDS").
+		Return("", fmt.Errorf("creds error")).Once()
 
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockTsProvider.EXPECT().Start(mock.Anything, "tskey-auth-xxxxx", "vanish-backup").
-		Return(nil)
-	mockTsProvider.EXPECT().LocalAddr().Return("", assert.AnError)
-	mockTsProvider.EXPECT().Close().Return(nil)
+	tmpConfig := t.TempDir() + "/config.yaml"
+	cfg := &config.Config{SyncJobs: []config.SyncJob{}}
+	require.NoError(t, config.Save(tmpConfig, cfg))
 
-	mockSyncSvc := mocks.NewMockSyncService(t)
-
-	opts := cmd.SyncOptions{
-		ConfigPath: "testdata/valid_config.yaml",
-		Timeout:    5 * time.Second,
+	opts := SyncOptions{
+		ConfigPath: tmpConfig,
+		Timeout:    30 * time.Second,
 	}
 
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
+
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "IP")
+	assert.Contains(t, err.Error(), "failed to get NAS credentials")
 }
 
-func TestSync_SyncJobFails(t *testing.T) {
+func TestSync_TailscaleStartFailed(t *testing.T) {
 	mockStore := mocks.NewMockSecretStore(t)
-	mockStore.EXPECT().Get(mock.Anything, vault.BitwardenTokenKey).
-		Return("test-token", nil)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
 
-	mockBW := mocks.NewMockBitwardenClient(t)
-	mockBW.EXPECT().Authenticate(mock.Anything, "test-token").
-		Return(nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.TailscaleAuthKeyItem).
-		Return("tskey-auth-xxxxx", nil)
-	mockBW.EXPECT().GetSecret(mock.Anything, vault.NASCredsItem).
-		Return("testuser:testpass", nil)
+	vaultSvc := vault.NewVaultService(mockStore)
 
-	vaultService := vault.NewVaultService(mockStore, mockBW)
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("tskey-test-12345", nil).Once()
+	mockStore.EXPECT().Get(mock.Anything, "NAS_CREDS").
+		Return("testuser:testpass", nil).Once()
+	mockTS.EXPECT().Start(mock.Anything, "tskey-test-12345", "vanish-backup").
+		Return(fmt.Errorf("tailscale error")).Once()
+	mockTS.EXPECT().Close().Return(nil).Once()
 
-	mockTsProvider := mocks.NewMockTailscaleProvider(t)
-	mockTsProvider.EXPECT().Start(mock.Anything, "tskey-auth-xxxxx", "vanish-backup").
-		Return(nil)
-	mockTsProvider.EXPECT().LocalAddr().Return("100.64.0.5", nil)
-	mockTsProvider.EXPECT().Close().Return(nil)
+	tmpConfig := t.TempDir() + "/config.yaml"
+	cfg := &config.Config{SyncJobs: []config.SyncJob{}}
+	require.NoError(t, config.Save(tmpConfig, cfg))
 
-	mockSyncSvc := mocks.NewMockSyncService(t)
-	// First sync succeeds, second fails
-	mockSyncSvc.EXPECT().Sync(mock.Anything, mock.Anything).
+	opts := SyncOptions{
+		ConfigPath: tmpConfig,
+		Timeout:    30 * time.Second,
+	}
+
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start Tailscale")
+}
+
+func TestSync_LocalAddrFailed(t *testing.T) {
+	mockStore := mocks.NewMockSecretStore(t)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
+
+	vaultSvc := vault.NewVaultService(mockStore)
+
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("tskey-test-12345", nil).Once()
+	mockStore.EXPECT().Get(mock.Anything, "NAS_CREDS").
+		Return("testuser:testpass", nil).Once()
+	mockTS.EXPECT().Start(mock.Anything, "tskey-test-12345", "vanish-backup").
 		Return(nil).Once()
-	mockSyncSvc.EXPECT().Sync(mock.Anything, mock.Anything).
-		Return(assert.AnError).Once()
+	mockTS.EXPECT().LocalAddr().
+		Return("", fmt.Errorf("no address")).Once()
+	mockTS.EXPECT().Close().Return(nil).Once()
 
-	opts := cmd.SyncOptions{
-		ConfigPath: "testdata/valid_config.yaml",
-		Timeout:    5 * time.Second,
+	tmpConfig := t.TempDir() + "/config.yaml"
+	cfg := &config.Config{SyncJobs: []config.SyncJob{}}
+	require.NoError(t, config.Save(tmpConfig, cfg))
+
+	opts := SyncOptions{
+		ConfigPath: tmpConfig,
+		Timeout:    30 * time.Second,
 	}
 
-	err := cmd.Sync(vaultService, mockTsProvider, mockSyncSvc, opts)
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
+
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "sync failed")
+	assert.Contains(t, err.Error(), "failed to get Tailscale IP")
+}
+
+func TestSync_ConfigLoadFailed(t *testing.T) {
+	mockStore := mocks.NewMockSecretStore(t)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
+
+	vaultSvc := vault.NewVaultService(mockStore)
+
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("tskey-test-12345", nil).Once()
+	mockStore.EXPECT().Get(mock.Anything, "NAS_CREDS").
+		Return("testuser:testpass", nil).Once()
+	mockTS.EXPECT().Start(mock.Anything, "tskey-test-12345", "vanish-backup").
+		Return(nil).Once()
+	mockTS.EXPECT().LocalAddr().
+		Return("100.64.0.1", nil).Once()
+	mockTS.EXPECT().Close().Return(nil).Once()
+
+	opts := SyncOptions{
+		ConfigPath: "/nonexistent/config.yaml",
+		Timeout:    30 * time.Second,
+	}
+
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to load config")
+}
+
+func TestSync_SyncJobFailed(t *testing.T) {
+	mockStore := mocks.NewMockSecretStore(t)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
+
+	vaultSvc := vault.NewVaultService(mockStore)
+
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("tskey-test-12345", nil).Once()
+	mockStore.EXPECT().Get(mock.Anything, "NAS_CREDS").
+		Return("testuser:testpass", nil).Once()
+	mockTS.EXPECT().Start(mock.Anything, "tskey-test-12345", "vanish-backup").
+		Return(nil).Once()
+	mockTS.EXPECT().LocalAddr().
+		Return("100.64.0.1", nil).Once()
+	mockTS.EXPECT().Close().Return(nil).Once()
+
+	// Mock sync failure
+	mockSync.EXPECT().Sync(mock.Anything, mock.Anything).
+		Return(fmt.Errorf("rclone error")).Once()
+
+	tmpConfig := t.TempDir() + "/config.yaml"
+	cfg := &config.Config{
+		SyncJobs: []config.SyncJob{
+			{
+				Name:        "failing-backup",
+				Source:      "/tmp/source",
+				Destination: "sftp://nas.local:22/backup",
+				Enabled:     true,
+			},
+		},
+	}
+	require.NoError(t, config.Save(tmpConfig, cfg))
+
+	opts := SyncOptions{
+		ConfigPath: tmpConfig,
+		Timeout:    30 * time.Second,
+	}
+
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "sync failed for failing-backup")
+}
+
+func TestSync_MultipleJobs(t *testing.T) {
+	mockStore := mocks.NewMockSecretStore(t)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
+
+	vaultSvc := vault.NewVaultService(mockStore)
+
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("tskey-test-12345", nil).Once()
+	mockStore.EXPECT().Get(mock.Anything, "NAS_CREDS").
+		Return("testuser:testpass", nil).Once()
+	mockTS.EXPECT().Start(mock.Anything, "tskey-test-12345", "vanish-backup").
+		Return(nil).Once()
+	mockTS.EXPECT().LocalAddr().
+		Return("100.64.0.1", nil).Once()
+	mockTS.EXPECT().Close().Return(nil).Once()
+
+	// Expect two sync calls
+	mockSync.EXPECT().Sync(mock.Anything, mock.MatchedBy(func(job sync.SyncJob) bool {
+		return job.Name == "backup1"
+	})).Return(nil).Once()
+	mockSync.EXPECT().Sync(mock.Anything, mock.MatchedBy(func(job sync.SyncJob) bool {
+		return job.Name == "backup2"
+	})).Return(nil).Once()
+
+	tmpConfig := t.TempDir() + "/config.yaml"
+	cfg := &config.Config{
+		SyncJobs: []config.SyncJob{
+			{
+				Name:        "backup1",
+				Source:      "/tmp/source1",
+				Destination: "sftp://nas.local:22/backup1",
+				Enabled:     true,
+			},
+			{
+				Name:        "backup2",
+				Source:      "/tmp/source2",
+				Destination: "sftp://nas.local:22/backup2",
+				Enabled:     true,
+			},
+			{
+				Name:        "disabled",
+				Source:      "/tmp/source3",
+				Destination: "sftp://nas.local:22/backup3",
+				Enabled:     false,
+			},
+		},
+	}
+	require.NoError(t, config.Save(tmpConfig, cfg))
+
+	opts := SyncOptions{
+		ConfigPath: tmpConfig,
+		Timeout:    30 * time.Second,
+	}
+
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
+
+	assert.NoError(t, err)
+}
+
+func TestSync_CloseErrorIsLogged(t *testing.T) {
+	mockStore := mocks.NewMockSecretStore(t)
+	mockTS := mocks.NewMockTailscaleProvider(t)
+	mockSync := mocks.NewMockSyncService(t)
+
+	vaultSvc := vault.NewVaultService(mockStore)
+
+	mockStore.EXPECT().Get(mock.Anything, "TS_AUTHKEY").
+		Return("tskey-test-12345", nil).Once()
+	mockStore.EXPECT().Get(mock.Anything, "NAS_CREDS").
+		Return("testuser:testpass", nil).Once()
+	mockTS.EXPECT().Start(mock.Anything, "tskey-test-12345", "vanish-backup").
+		Return(nil).Once()
+	mockTS.EXPECT().LocalAddr().
+		Return("100.64.0.1", nil).Once()
+	mockTS.EXPECT().Close().
+		Return(fmt.Errorf("close error")).Once()
+
+	mockSync.EXPECT().Sync(mock.Anything, mock.Anything).
+		Return(nil).Once()
+
+	tmpConfig := t.TempDir() + "/config.yaml"
+	cfg := &config.Config{
+		SyncJobs: []config.SyncJob{
+			{
+				Name:        "test",
+				Source:      "/tmp/source",
+				Destination: "sftp://nas.local:22/backup",
+				Enabled:     true,
+			},
+		},
+	}
+	require.NoError(t, config.Save(tmpConfig, cfg))
+
+	opts := SyncOptions{
+		ConfigPath: tmpConfig,
+		Timeout:    30 * time.Second,
+	}
+
+	err := Sync(vaultSvc, mockTS, mockSync, opts)
+
+	// Should succeed despite close error (which is just logged)
+	assert.NoError(t, err)
 }

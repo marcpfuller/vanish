@@ -1,60 +1,57 @@
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
 linters:
   enable:
-    - errcheck      # Check for unchecked errors
-    - gosimple      # Simplify code
-    - govet         # Vet examines Go source code
-    - ineffassign   # Detect ineffectual assignments
-    - staticcheck   # Advanced static analysis
-    - typecheck     # Type-check code
-    - unused        # Check for unused code
-    - gofmt         # Check code formatting
-    - goimports     # Check import formatting
-    - misspell      # Spell checker
-    - revive        # Drop-in replacement for golint
-    - gosec         # Security problems
-    - goconst       # Repeated strings that could be constants
-    - unconvert     # Unnecessary type conversions
-    - dupl          # Code cloning detection
-    - prealloc      # Find slice declarations that could be preallocated
-    - copyloopvar   # Checks for copying loop variables (Go 1.22+)
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  
-  gofmt:
-    simplify: true
-  
-  revive:
+    - dupl
+    - goconst
+    - gosec
+    - misspell
+    - prealloc
+    - revive
+    - unconvert
+  settings:
+    dupl:
+      threshold: 100
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    gosec:
+      excludes:
+        - G204
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+          disabled: false
+        - name: package-comments
+          severity: warning
+          disabled: false
+  exclusions:
+    generated: lax
     rules:
-      - name: exported
-        severity: warning
-        disabled: false
-      - name: package-comments
-        severity: warning
-        disabled: false
-  
-  gosec:
-    excludes:
-      - G204 # Subprocess launched with variable
-  
-  dupl:
-    threshold: 100
-
+      - linters:
+          - dupl
+          - goconst
+          - gosec
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
-  
-  exclude-rules:
-    # Exclude some linters from running on tests files
-    - path: _test\.go
-      linters:
-        - dupl
-        - gosec
-        - goconst
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

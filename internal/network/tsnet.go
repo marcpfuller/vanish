@@ -30,7 +30,7 @@ func (t *TsnetProvider) Start(ctx context.Context, authKey string, hostname stri
 	defer t.mu.Unlock()
 
 	if t.started {
-		return fmt.Errorf("Tailscale server already started")
+		return fmt.Errorf("tailscale server already started")
 	}
 
 	// Create ephemeral tsnet server
@@ -60,7 +60,7 @@ func (t *TsnetProvider) Dial(ctx context.Context, network, address string) (net.
 	defer t.mu.RUnlock()
 
 	if !t.started || t.server == nil {
-		return nil, fmt.Errorf("Tailscale server not started")
+		return nil, fmt.Errorf("tailscale server not started")
 	}
 
 	// Use tsnet's Dial which routes through the Tailscale network
@@ -98,7 +98,7 @@ func (t *TsnetProvider) LocalAddr() (string, error) {
 	defer t.mu.RUnlock()
 
 	if !t.started || t.server == nil {
-		return "", fmt.Errorf("Tailscale server not started")
+		return "", fmt.Errorf("tailscale server not started")
 	}
 
 	lc, err := t.server.LocalClient()

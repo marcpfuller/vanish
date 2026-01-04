@@ -6,14 +6,20 @@ import (
 	"runtime"
 )
 
+const (
+	osLinux   = "linux"
+	osWindows = "windows"
+	osDarwin  = "darwin"
+)
+
 // DetectKeychainBackend returns information about which keychain backend will be used
 func DetectKeychainBackend() string {
 	switch runtime.GOOS {
-	case "windows":
+	case osWindows:
 		return "Windows Credential Manager"
-	case "darwin":
+	case osDarwin:
 		return "macOS Keychain"
-	case "linux":
+	case osLinux:
 		// Check if we're in WSL
 		if isWSL() {
 			return "Linux (WSL - may need Windows Credential Manager access)"

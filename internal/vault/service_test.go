@@ -2,7 +2,7 @@ package vault_test
 
 import (
 	"context"
-	"errors"
+	"os"
 	"testing"
 
 	"github.com/bdkmv/vanish/internal/vault"
@@ -11,146 +11,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestVaultService_GetBitwardenSecrets(t *testing.T) {
-	ctx := context.Background()
-	mockStore := mocks.NewMockSecretStore(t)
-	mockBW := mocks.NewMockBitwardenClient(t)
-
-	service := vault.NewVaultService(mockStore, mockBW)
-
-	// Setup expectations
-	accessToken := "test-access-token"
-	mockStore.EXPECT().
-		Get(ctx, vault.BitwardenTokenKey).
-		Return(accessToken, nil).
-		Once()
-
-	mockBW.EXPECT().
-		Authenticate(ctx, accessToken).
-		Return(nil).
-		Once()
-
-	secretID := "test-secret-id"
-	secretValue := "test-secret-value"
-	mockBW.EXPECT().
-		GetSecret(ctx, secretID).
-		Return(secretValue, nil).
-		Once()
-
-	// Execute
-	secrets, err := service.GetBitwardenSecrets(ctx, secretID)
-
-	// Assert
-	require.NoError(t, err)
-	assert.Equal(t, secretValue, secrets[secretID])
-}
-
-func TestVaultService_GetBitwardenSecrets_NoToken(t *testing.T) {
-	ctx := context.Background()
-	mockStore := mocks.NewMockSecretStore(t)
-	mockBW := mocks.NewMockBitwardenClient(t)
-
-	service := vault.NewVaultService(mockStore, mockBW)
-
-	// Setup expectations - token not found
-	mockStore.EXPECT().
-		Get(ctx, vault.BitwardenTokenKey).
-		Return("", vault.ErrSecretNotFound).
-		Once()
-
-	// Execute
-	_, err := service.GetBitwardenSecrets(ctx, "any-secret")
-
-	// Assert
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to get Bitwarden token")
-}
-
-func TestVaultService_GetBitwardenSecrets_AuthFails(t *testing.T) {
-	ctx := context.Background()
-	mockStore := mocks.NewMockSecretStore(t)
-	mockBW := mocks.NewMockBitwardenClient(t)
-
-	service := vault.NewVaultService(mockStore, mockBW)
-
-	// Setup expectations
-	accessToken := "invalid-token"
-	mockStore.EXPECT().
-		Get(ctx, vault.BitwardenTokenKey).
-		Return(accessToken, nil).
-		Once()
-
-	authErr := errors.New("authentication failed")
-	mockBW.EXPECT().
-		Authenticate(ctx, accessToken).
-		Return(authErr).
-		Once()
-
-	// Execute
-	_, err := service.GetBitwardenSecrets(ctx, "any-secret")
-
-	// Assert
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to authenticate")
-}
-
 func TestVaultService_GetTailscaleAuthKey(t *testing.T) {
 	ctx := context.Background()
 	mockStore := mocks.NewMockSecretStore(t)
-	mockBW := mocks.NewMockBitwardenClient(t)
 
-	service := vault.NewVaultService(mockStore, mockBW)
+	service := vault.NewVaultService(mockStore)
 
 	// Setup expectations
-	accessToken := "test-token"
-	authKey := "tskey-test-123"
-
+	expectedKey := "tskey-auth-test123"
 	mockStore.EXPECT().
-		Get(ctx, vault.BitwardenTokenKey).
-		Return(accessToken, nil).
-		Once()
-
-	mockBW.EXPECT().
-		Authenticate(ctx, accessToken).
-		Return(nil).
-		Once()
-
-	mockBW.EXPECT().
-		GetSecret(ctx, vault.TailscaleAuthKeyItem).
-		Return(authKey, nil).
+		Get(ctx, vault.TailscaleAuthKeyItem).
+		Return(expectedKey, nil).
 		Once()
 
 	// Execute
-	result, err := service.GetTailscaleAuthKey(ctx)
+	key, err := service.GetTailscaleAuthKey(ctx)
 
 	// Assert
 	require.NoError(t, err)
-	assert.Equal(t, authKey, result)
+	assert.Equal(t, expectedKey, key)
 }
 
 func TestVaultService_GetNASCredentials(t *testing.T) {
 	ctx := context.Background()
 	mockStore := mocks.NewMockSecretStore(t)
-	mockBW := mocks.NewMockBitwardenClient(t)
 
-	service := vault.NewVaultService(mockStore, mockBW)
+	service := vault.NewVaultService(mockStore)
 
 	// Setup expectations
-	accessToken := "test-token"
 	creds := "admin:SecurePassword123"
-
 	mockStore.EXPECT().
-		Get(ctx, vault.BitwardenTokenKey).
-		Return(accessToken, nil).
-		Once()
-
-	mockBW.EXPECT().
-		Authenticate(ctx, accessToken).
-		Return(nil).
-		Once()
-
-	mockBW.EXPECT().
-		GetSecret(ctx, vault.NASCredsItem).
+		Get(ctx, vault.NASCredsItem).
 		Return(creds, nil).
 		Once()
 
@@ -166,26 +57,13 @@ func TestVaultService_GetNASCredentials(t *testing.T) {
 func TestVaultService_GetNASCredentials_InvalidFormat(t *testing.T) {
 	ctx := context.Background()
 	mockStore := mocks.NewMockSecretStore(t)
-	mockBW := mocks.NewMockBitwardenClient(t)
 
-	service := vault.NewVaultService(mockStore, mockBW)
+	service := vault.NewVaultService(mockStore)
 
-	// Setup expectations
-	accessToken := "test-token"
+	// Setup expectations - invalid format (no colon)
 	invalidCreds := "no-colon-separator"
-
 	mockStore.EXPECT().
-		Get(ctx, vault.BitwardenTokenKey).
-		Return(accessToken, nil).
-		Once()
-
-	mockBW.EXPECT().
-		Authenticate(ctx, accessToken).
-		Return(nil).
-		Once()
-
-	mockBW.EXPECT().
-		GetSecret(ctx, vault.NASCredsItem).
+		Get(ctx, vault.NASCredsItem).
 		Return(invalidCreds, nil).
 		Once()
 
@@ -199,19 +77,68 @@ func TestVaultService_GetNASCredentials_InvalidFormat(t *testing.T) {
 
 func TestVaultService_Close(t *testing.T) {
 	mockStore := mocks.NewMockSecretStore(t)
-	mockBW := mocks.NewMockBitwardenClient(t)
 
-	service := vault.NewVaultService(mockStore, mockBW)
-
-	// Setup expectations
-	mockBW.EXPECT().
-		Close().
-		Return(nil).
-		Once()
+	service := vault.NewVaultService(mockStore)
 
 	// Execute
 	err := service.Close()
 
-	// Assert
+	// Assert - should be no-op and return nil
 	assert.NoError(t, err)
+}
+
+func TestVaultService_GetTailscaleAuthKey_FromEnv(t *testing.T) {
+	ctx := context.Background()
+	mockStore := mocks.NewMockSecretStore(t)
+
+	service := vault.NewVaultService(mockStore)
+
+	// Set environment variable
+	expectedKey := "tskey-from-env-123"
+	require.NoError(t, os.Setenv("TS_AUTHKEY", expectedKey))
+	defer func() { _ = os.Unsetenv("TS_AUTHKEY") }() //nolint:errcheck // test cleanup
+
+	// Execute - should use env var, no keyring access
+	key, err := service.GetTailscaleAuthKey(ctx)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, expectedKey, key)
+}
+
+func TestVaultService_GetNASCredentials_FromEnv(t *testing.T) {
+	ctx := context.Background()
+	mockStore := mocks.NewMockSecretStore(t)
+
+	service := vault.NewVaultService(mockStore)
+
+	// Set environment variable
+	require.NoError(t, os.Setenv("NAS_CREDS", "testuser:testpass"))
+	defer func() { _ = os.Unsetenv("NAS_CREDS") }() //nolint:errcheck // test cleanup
+
+	// Execute - should use env var, no keyring access
+	username, password, err := service.GetNASCredentials(ctx)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "testuser", username)
+	assert.Equal(t, "testpass", password)
+}
+
+func TestVaultService_GetNASCredentials_FromEnv_InvalidFormat(t *testing.T) {
+	ctx := context.Background()
+	mockStore := mocks.NewMockSecretStore(t)
+
+	service := vault.NewVaultService(mockStore)
+
+	// Set invalid environment variable
+	require.NoError(t, os.Setenv("NAS_CREDS", "invalid-no-colon"))
+	defer func() { _ = os.Unsetenv("NAS_CREDS") }() //nolint:errcheck // test cleanup
+
+	// Execute
+	_, _, err := service.GetNASCredentials(ctx)
+
+	// Assert
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid credential format")
 }

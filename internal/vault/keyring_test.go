@@ -57,7 +57,7 @@ func TestKeyringStore_DeleteNonExistent(t *testing.T) {
 	assert.Error(t, err, "Delete should return an error for non-existent key")
 }
 
-func TestKeyringStore_BiwardenTokenStorage(t *testing.T) {
+func TestKeyringStore_CredentialsStorage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping keyring test in short mode")
 	}
@@ -65,20 +65,20 @@ func TestKeyringStore_BiwardenTokenStorage(t *testing.T) {
 	ctx := context.Background()
 	store := vault.NewKeyringStore()
 
-	// Test storing Bitwarden token
-	token := "bw_test_token_12345"
-	err := store.Set(ctx, vault.BitwardenTokenKey, token)
+	// Test storing Tailscale key
+	tsKey := "tskey-auth-test12345"
+	err := store.Set(ctx, vault.TailscaleAuthKeyItem, tsKey)
 	if err != nil {
 		t.Skipf("Skipping test - keyring not available: %v", err)
 	}
-	require.NoError(t, err, "Should be able to store Bitwarden token")
+	require.NoError(t, err, "Should be able to store Tailscale key")
 
 	// Retrieve it
-	retrievedToken, err := store.Get(ctx, vault.BitwardenTokenKey)
-	require.NoError(t, err, "Should be able to retrieve Bitwarden token")
-	assert.Equal(t, token, retrievedToken, "Token should match")
+	retrievedKey, err := store.Get(ctx, vault.TailscaleAuthKeyItem)
+	require.NoError(t, err, "Should be able to retrieve Tailscale key")
+	assert.Equal(t, tsKey, retrievedKey, "Key should match")
 
 	// Clean up
-	err = store.Delete(ctx, vault.BitwardenTokenKey)
-	require.NoError(t, err, "Should be able to delete Bitwarden token")
+	err = store.Delete(ctx, vault.TailscaleAuthKeyItem)
+	require.NoError(t, err, "Should be able to delete Tailscale key")
 }

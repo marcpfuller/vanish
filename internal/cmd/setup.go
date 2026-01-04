@@ -2,9 +2,9 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -12,62 +12,84 @@ import (
 	"golang.org/x/term"
 )
 
-// Setup prompts for the Bitwarden access token and stores it securely in the system keychain
+// Setup prompts for credentials and stores them securely in the system keychain
 func Setup(store vault.SecretStore) error {
 	ctx := context.Background()
 
-	fmt.Println("=== Vanish Setup ===")
-	fmt.Println("This will configure your Bitwarden access token for secure backup operations.")
-	fmt.Printf("Keychain backend: %s\n", vault.DetectKeychainBackend())
+	log.Println("=== Vanish Setup ===")
+	log.Println("This will store your Tailscale and NAS credentials securely.")
+	log.Printf("Keychain backend: %s\n", vault.DetectKeychainBackend())
 
 	// Show WSL help if applicable
 	if wslHelp := vault.GetWSLKeychainHelp(); wslHelp != "" {
-		fmt.Println(wslHelp)
+		log.Println(wslHelp)
 	}
 
-	fmt.Println()
+	log.Println()
 
-	// Check if token already exists
-	existingToken, err := store.Get(ctx, vault.BitwardenTokenKey)
-	if err == nil && existingToken != "" {
-		fmt.Println("A Bitwarden token is already configured.")
-		fmt.Print("Do you want to replace it? (yes/no): ")
-		reader := bufio.NewReader(os.Stdin)
-		response, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read response: %w", err)
-		}
-		response = strings.TrimSpace(strings.ToLower(response))
-		if response != "yes" && response != "y" {
-			fmt.Println("Setup cancelled.")
-			return nil
-		}
-	}
+	// Prompt for Tailscale auth key
+	fmt.Println("Please enter your Tailscale auth key:")
+	fmt.Println("(Get one from: https://login.tailscale.com/admin/settings/keys)")
+	fmt.Print("Tailscale Auth Key: ")
 
-	// Prompt for Bitwarden token
-	fmt.Println()
-	fmt.Println("Please enter your Bitwarden Access Token:")
-	fmt.Print("Token: ")
-
-	// Read token securely (without echo)
-	tokenBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-	if err != nil {
-		return fmt.Errorf("failed to read token: %w", err)
-	}
-	token := strings.TrimSpace(string(tokenBytes))
+	tsKeyBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println() // New line after password input
+	if err != nil {
+		return fmt.Errorf("failed to read Tailscale auth key (terminal may not support password input): %w", err)
+	}
+	tsKey := strings.TrimSpace(string(tsKeyBytes))
 
-	if token == "" {
-		return fmt.Errorf("token cannot be empty")
+	if tsKey == "" {
+		return fmt.Errorf("tailscale auth key cannot be empty")
 	}
 
-	// Store the token in the keychain
-	if err := store.Set(ctx, vault.BitwardenTokenKey, token); err != nil {
-		return fmt.Errorf("failed to store token in keychain: %w", err)
+	// Store the Tailscale key
+	if err := store.Set(ctx, vault.TailscaleAuthKeyItem, tsKey); err != nil {
+		return fmt.Errorf("failed to store Tailscale auth key in keychain: %w", err)
 	}
 
-	fmt.Println()
-	fmt.Println("✓ Successfully stored Bitwarden token in system keychain")
-	fmt.Println("✓ Setup complete!")
+	log.Println("✓ Tailscale auth key stored successfully")
+	log.Println()
+
+	// Prompt for NAS credentials
+	log.Println("Please enter your NAS credentials:")
+	fmt.Print("NAS Username: ")
+
+	// Use term.ReadPassword for username too (even though it won't echo)
+	// This is more reliable on Windows after a previous ReadPassword call
+	usernameBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println() // New line after input
+	if err != nil {
+		return fmt.Errorf("failed to read username: %w", err)
+	}
+	username := strings.TrimSpace(string(usernameBytes))
+
+	if username == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+
+	fmt.Print("NAS Password: ")
+	passwordBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println() // New line after password input
+	if err != nil {
+		return fmt.Errorf("failed to read password (terminal may not support password input): %w", err)
+	}
+	password := strings.TrimSpace(string(passwordBytes))
+
+	if password == "" {
+		return fmt.Errorf("password cannot be empty")
+	}
+
+	// Store NAS credentials in "username:password" format
+	nasCreds := fmt.Sprintf("%s:%s", username, password)
+	if err := store.Set(ctx, vault.NASCredsItem, nasCreds); err != nil {
+		return fmt.Errorf("failed to store NAS credentials in keychain: %w", err)
+	}
+
+	log.Println("✓ NAS credentials stored successfully")
+	log.Println()
+	log.Println("✓ Setup complete!")
+	log.Println()
+	log.Println("You can now run 'vanish sync' to start backing up your files.")
 	return nil
 }
