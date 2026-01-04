@@ -1,0 +1,16 @@
+tailscale:
+  hostname: test-device
+
+sync_jobs:
+  - name: "Photos"
+    source: "/home/user/photos"
+    destination: "sftp://nas.local:22/backup/photos"
+    enabled: true
+  - name: "Documents"
+    source: "/home/user/docs"
+    destination: "sftp://nas.local:22/backup/docs"
+    enabled: true
+  - name: "Disabled Job"
+    source: "/tmp/test"
+    destination: "sftp://nas.local:22/backup/test"
+    enabled: false

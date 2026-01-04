@@ -1,0 +1,16 @@
+version: "1.0"
+sync_jobs:
+  - name: "Documents Backup"
+    source: "/home/user/Documents"
+    destination: "sftp://nas.tailnet:22/backups/documents"
+    enabled: true
+  
+  - name: "Photos Backup"
+    source: "/home/user/Pictures"
+    destination: "sftp://nas.tailnet:22/backups/photos"
+    enabled: true
+  
+  - name: "Code Projects"
+    source: "/home/user/Projects"
+    destination: "sftp://nas.tailnet:22/backups/projects"
+    enabled: false

@@ -1,0 +1,12 @@
+tailscale:
+  hostname: test-device
+
+sync_jobs:
+  - name: "Disabled Job 1"
+    source: "/tmp/test1"
+    destination: "sftp://nas.local:22/backup/test1"
+    enabled: false
+  - name: "Disabled Job 2"
+    source: "/tmp/test2"
+    destination: "sftp://nas.local:22/backup/test2"
+    enabled: false
