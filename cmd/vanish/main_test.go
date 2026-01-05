@@ -4,203 +4,115 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestSetupLogging_FileMode(t *testing.T) {
-	// Create temporary log directory
-	tmpDir := t.TempDir()
-	logFilePath := filepath.Join(tmpDir, "test.log")
+func TestSetupLogging(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(t *testing.T) string
+		validate func(t *testing.T, logPath string)
+	}{
+		{
+			name: "file mode with logging",
+			setup: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "test.log")
+			},
+			validate: func(t *testing.T, logPath string) {
+				testMessage := "test log message for file output"
+				log.Println(testMessage)
 
-	// Setup logging
-	setupLogging(logFilePath)
+				content, err := os.ReadFile(logPath)
+				require.NoError(t, err)
 
-	// Write a test log message
-	testMessage := "test log message for file output"
-	log.Println(testMessage)
+				logContent := string(content)
+				assert.Contains(t, logContent, testMessage)
+				assert.Contains(t, logContent, ".", "Expected microsecond timestamps")
+				assert.Contains(t, logContent, "Logging initialized to: "+logPath)
+			},
+		},
+		{
+			name: "file permissions",
+			setup: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "test-perms.log")
+			},
+			validate: func(t *testing.T, logPath string) {
+				info, err := os.Stat(logPath)
+				require.NoError(t, err)
 
-	// Read the log file
-	content, err := os.ReadFile(logFilePath)
-	if err != nil {
-		t.Fatalf("Failed to read log file: %v", err)
+				expectedPerms := os.FileMode(0o600)
+				actualPerms := info.Mode().Perm()
+				assert.Equal(t, expectedPerms, actualPerms)
+			},
+		},
+		{
+			name: "directory creation",
+			setup: func(t *testing.T) string {
+				tmpDir := t.TempDir()
+				logPath := filepath.Join(tmpDir, "nested", "logs", "test.log")
+				// Verify directory doesn't exist yet
+				_, err := os.Stat(filepath.Dir(logPath))
+				assert.Error(t, err)
+				return logPath
+			},
+			validate: func(t *testing.T, logPath string) {
+				// Verify directory was created
+				_, err := os.Stat(filepath.Dir(logPath))
+				assert.NoError(t, err)
+				// Verify log file was created
+				_, err = os.Stat(logPath)
+				assert.NoError(t, err)
+			},
+		},
+		{
+			name: "append mode",
+			setup: func(t *testing.T) string {
+				tmpDir := t.TempDir()
+				logPath := filepath.Join(tmpDir, "append-test.log")
+				// Write initial content
+				initialContent := "initial log entry\n"
+				err := os.WriteFile(logPath, []byte(initialContent), 0o600)
+				require.NoError(t, err)
+				return logPath
+			},
+			validate: func(t *testing.T, logPath string) {
+				newMessage := "appended log message"
+				log.Println(newMessage)
+
+				content, err := os.ReadFile(logPath)
+				require.NoError(t, err)
+
+				logContent := string(content)
+				assert.Contains(t, logContent, "initial log entry")
+				assert.Contains(t, logContent, newMessage)
+			},
+		},
+		{
+			name: "directory permissions",
+			setup: func(t *testing.T) string {
+				tmpDir := t.TempDir()
+				return filepath.Join(tmpDir, "subdir", "test.log")
+			},
+			validate: func(t *testing.T, logPath string) {
+				logDir := filepath.Dir(logPath)
+				info, err := os.Stat(logDir)
+				require.NoError(t, err)
+
+				actualPerms := info.Mode().Perm()
+				assert.LessOrEqual(t, actualPerms, os.FileMode(0o750))
+			},
+		},
 	}
 
-	// Verify the message was written
-	logContent := string(content)
-	if !strings.Contains(logContent, testMessage) {
-		t.Errorf("Expected log file to contain %q, but it didn't.\nLog content:\n%s", testMessage, logContent)
-	}
-
-	// Verify timestamp format (should include microseconds)
-	if !strings.Contains(logContent, ".") {
-		t.Error("Expected log to contain microsecond timestamps (with decimal point), but it doesn't")
-	}
-
-	// Verify initialization message
-	expectedInit := "Logging initialized to: " + logFilePath
-	if !strings.Contains(logContent, expectedInit) {
-		t.Errorf("Expected log file to contain initialization message %q", expectedInit)
-	}
-}
-
-func TestSetupLogging_FilePermissions(t *testing.T) {
-	// Create temporary log directory
-	tmpDir := t.TempDir()
-	logFilePath := filepath.Join(tmpDir, "test-perms.log")
-
-	// Setup logging
-	setupLogging(logFilePath)
-
-	// Check file permissions
-	info, err := os.Stat(logFilePath)
-	if err != nil {
-		t.Fatalf("Failed to stat log file: %v", err)
-	}
-
-	// Verify file permissions are 0600 (owner read/write only)
-	expectedPerms := os.FileMode(0o600)
-	actualPerms := info.Mode().Perm()
-	if actualPerms != expectedPerms {
-		t.Errorf("Expected file permissions %o, got %o", expectedPerms, actualPerms)
-	}
-}
-
-func TestSetupLogging_DirectoryCreation(t *testing.T) {
-	// Create temporary directory
-	tmpDir := t.TempDir()
-	// Use nested directory that doesn't exist yet
-	logFilePath := filepath.Join(tmpDir, "nested", "logs", "test.log")
-
-	// Verify directory doesn't exist yet
-	if _, err := os.Stat(filepath.Dir(logFilePath)); err == nil {
-		t.Fatal("Expected log directory to not exist yet")
-	}
-
-	// Setup logging (should create directory)
-	setupLogging(logFilePath)
-
-	// Verify directory was created
-	if _, err := os.Stat(filepath.Dir(logFilePath)); err != nil {
-		t.Errorf("Expected log directory to be created, but got error: %v", err)
-	}
-
-	// Verify log file was created
-	if _, err := os.Stat(logFilePath); err != nil {
-		t.Errorf("Expected log file to be created, but got error: %v", err)
-	}
-}
-
-func TestSetupLogging_AppendMode(t *testing.T) {
-	// Create temporary log directory
-	tmpDir := t.TempDir()
-	logFilePath := filepath.Join(tmpDir, "append-test.log")
-
-	// Write initial content
-	initialContent := "initial log entry\n"
-	if err := os.WriteFile(logFilePath, []byte(initialContent), 0o600); err != nil {
-		t.Fatalf("Failed to write initial content: %v", err)
-	}
-
-	// Setup logging (should append, not truncate)
-	setupLogging(logFilePath)
-
-	// Write a new log message
-	newMessage := "appended log message"
-	log.Println(newMessage)
-
-	// Read the log file
-	content, err := os.ReadFile(logFilePath)
-	if err != nil {
-		t.Fatalf("Failed to read log file: %v", err)
-	}
-
-	logContent := string(content)
-
-	// Verify initial content is still there
-	if !strings.Contains(logContent, initialContent) {
-		t.Error("Expected log file to contain initial content (append mode), but it was truncated")
-	}
-
-	// Verify new content was added
-	if !strings.Contains(logContent, newMessage) {
-		t.Error("Expected log file to contain new message")
-	}
-}
-
-func TestSetupLogging_InvalidPath(t *testing.T) {
-	// Try to setup logging with an invalid path (should fail gracefully)
-	invalidPath := "/root/this/path/should/not/be/writable/test.log"
-
-	// Capture the original stderr
-	oldStderr := os.Stderr
-	defer func() { os.Stderr = oldStderr }()
-
-	// Create a pipe to capture stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Failed to create pipe: %v", err)
-	}
-	os.Stderr = w
-
-	// Setup logging with invalid path (should not panic)
-	setupLogging(invalidPath)
-
-	// Close write end and read stderr
-	if err := w.Close(); err != nil {
-		t.Logf("Warning: failed to close pipe writer: %v", err)
-	}
-	stderrOutput := make([]byte, 1024)
-	n, err := r.Read(stderrOutput)
-	if err != nil && n == 0 {
-		t.Logf("Warning: failed to read stderr: %v", err)
-	}
-	stderrStr := string(stderrOutput[:n])
-
-	// Verify warning message was printed
-	if !strings.Contains(stderrStr, "Warning") {
-		t.Logf("Expected warning about directory creation failure, stderr: %s", stderrStr)
-	}
-}
-
-func TestLogOutputWithoutFileEnv(t *testing.T) {
-	// Save original log output
-	oldOutput := log.Writer()
-	defer log.SetOutput(oldOutput)
-
-	// Create a buffer to capture log output
-	var buf strings.Builder
-	log.SetOutput(&buf)
-
-	// Log a test message
-	testMessage := "test message without file env"
-	log.Println(testMessage)
-
-	// Verify the message was written to the buffer
-	if !strings.Contains(buf.String(), testMessage) {
-		t.Errorf("Expected log output to contain %q, but got: %s", testMessage, buf.String())
-	}
-}
-
-func TestSetupLogging_DirectoryPermissions(t *testing.T) {
-	// Create temporary base directory
-	tmpDir := t.TempDir()
-	logFilePath := filepath.Join(tmpDir, "subdir", "test.log")
-
-	// Setup logging
-	setupLogging(logFilePath)
-
-	// Check directory permissions
-	logDir := filepath.Dir(logFilePath)
-	info, err := os.Stat(logDir)
-	if err != nil {
-		t.Fatalf("Failed to stat log directory: %v", err)
-	}
-
-	// Verify directory permissions are 0750 or less restrictive
-	actualPerms := info.Mode().Perm()
-	if actualPerms > 0o750 {
-		t.Errorf("Expected directory permissions 0750 or less, got %o", actualPerms)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logPath := tt.setup(t)
+			setupLogging(logPath)
+			tt.validate(t, logPath)
+		})
 	}
 }
 

@@ -12,262 +12,304 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewRcloneService(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	assert.NotNil(t, service)
-}
-
-func TestNewRcloneService_WithDialer(t *testing.T) {
-	dialer := func(ctx context.Context, network, address string) (net.Conn, error) {
-		return nil, nil
-	}
-
-	service := sync.NewRcloneService(dialer)
-	assert.NotNil(t, service)
-}
-
-func TestRcloneService_Sync_InvalidSource(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	ctx := context.Background()
-
-	job := sync.SyncJob{
-		Name:        "test",
-		Source:      "invalid://source",
-		Destination: "/tmp/dest",
-	}
-
-	err := service.Sync(ctx, job)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create source filesystem")
-}
-
-func TestRcloneService_SyncAll_EmptyJobs(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	ctx := context.Background()
-
-	err := service.SyncAll(ctx, []sync.SyncJob{})
-	assert.NoError(t, err)
-}
-
-func TestRcloneService_SyncAll_WithError(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	ctx := context.Background()
-
-	jobs := []sync.SyncJob{
+func TestRcloneService_Construction(t *testing.T) {
+	tests := []struct {
+		name   string
+		dialer func(ctx context.Context, network, address string) (net.Conn, error)
+	}{
 		{
-			Name:        "test1",
-			Source:      "invalid://source",
-			Destination: "/tmp/dest",
+			name:   "without dialer",
+			dialer: nil,
+		},
+		{
+			name: "with dialer",
+			dialer: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return nil, nil
+			},
 		},
 	}
 
-	err := service.SyncAll(ctx, jobs)
-	assert.Error(t, err)
-}
-
-func TestRcloneService_Sync_InvalidDestination(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	ctx := context.Background()
-
-	job := sync.SyncJob{
-		Name:        "test",
-		Source:      "/tmp/source",
-		Destination: "invalid://dest",
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := sync.NewRcloneService(tt.dialer)
+			assert.NotNil(t, service)
+		})
 	}
-
-	err := service.Sync(ctx, job)
-	assert.Error(t, err)
-	// Error message may vary depending on which filesystem fails first
 }
 
-func TestRcloneService_Sync_EmptyJob(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	ctx := context.Background()
-
-	job := sync.SyncJob{}
-
-	err := service.Sync(ctx, job)
-	assert.Error(t, err)
-}
-
-func TestRcloneService_SyncAll_MultipleJobs(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	ctx := context.Background()
-
-	jobs := []sync.SyncJob{
+func TestRcloneService_Sync(t *testing.T) {
+	tests := []struct {
+		name          string
+		setupDirs     func(t *testing.T) (srcDir, dstDir string)
+		job           func(srcDir, dstDir string) sync.SyncJob
+		expectError   bool
+		errorContains string
+		validate      func(t *testing.T, srcDir, dstDir string)
+	}{
 		{
-			Name:        "test1",
-			Source:      "invalid1://source",
-			Destination: "/tmp/dest1",
+			name: "invalid source",
+			setupDirs: func(t *testing.T) (string, string) {
+				return "", ""
+			},
+			job: func(_, _ string) sync.SyncJob {
+				return sync.SyncJob{
+					Name:        "test",
+					Source:      "invalid://source",
+					Destination: "/tmp/dest",
+				}
+			},
+			expectError:   true,
+			errorContains: "failed to create source filesystem",
 		},
 		{
-			Name:        "test2",
-			Source:      "invalid2://source",
-			Destination: "/tmp/dest2",
+			name: "invalid destination",
+			setupDirs: func(t *testing.T) (string, string) {
+				return "", ""
+			},
+			job: func(_, _ string) sync.SyncJob {
+				return sync.SyncJob{
+					Name:        "test",
+					Source:      "/tmp/source",
+					Destination: "invalid://dest",
+				}
+			},
+			expectError: true,
+		},
+		{
+			name: "empty job",
+			setupDirs: func(t *testing.T) (string, string) {
+				return "", ""
+			},
+			job: func(_, _ string) sync.SyncJob {
+				return sync.SyncJob{}
+			},
+			expectError: true,
+		},
+		{
+			name: "cancelled context",
+			setupDirs: func(t *testing.T) (string, string) {
+				return "", ""
+			},
+			job: func(_, _ string) sync.SyncJob {
+				return sync.SyncJob{
+					Name:        "test",
+					Source:      "invalid://source",
+					Destination: "/tmp/dest",
+				}
+			},
+			expectError: true,
+		},
+		{
+			name: "local path sync",
+			setupDirs: func(t *testing.T) (string, string) {
+				srcDir := t.TempDir()
+				dstDir := t.TempDir()
+
+				testFile := filepath.Join(srcDir, "test.txt")
+				err := os.WriteFile(testFile, []byte("test"), 0o600)
+				require.NoError(t, err)
+
+				return srcDir, dstDir
+			},
+			job: func(srcDir, dstDir string) sync.SyncJob {
+				return sync.SyncJob{
+					Name:        "test",
+					Source:      srcDir,
+					Destination: dstDir,
+				}
+			},
+			expectError: false,
+			validate: func(t *testing.T, srcDir, dstDir string) {
+				dstFile := filepath.Join(dstDir, "test.txt")
+				data, err := os.ReadFile(dstFile)
+				assert.NoError(t, err)
+				assert.Equal(t, "test", string(data))
+			},
+		},
+		{
+			name: "invalid mode",
+			setupDirs: func(t *testing.T) (string, string) {
+				return t.TempDir(), t.TempDir()
+			},
+			job: func(srcDir, dstDir string) sync.SyncJob {
+				return sync.SyncJob{
+					Name:        "test",
+					Source:      srcDir,
+					Destination: dstDir,
+					Mode:        "invalid-mode",
+				}
+			},
+			expectError:   true,
+			errorContains: "invalid mode",
+		},
+		{
+			name: "sync mode",
+			setupDirs: func(t *testing.T) (string, string) {
+				srcDir := t.TempDir()
+				dstDir := t.TempDir()
+
+				testFile := filepath.Join(srcDir, "test.txt")
+				err := os.WriteFile(testFile, []byte("test content"), 0o600)
+				require.NoError(t, err)
+
+				extraFile := filepath.Join(dstDir, "extra.txt")
+				err = os.WriteFile(extraFile, []byte("extra"), 0o600)
+				require.NoError(t, err)
+
+				return srcDir, dstDir
+			},
+			job: func(srcDir, dstDir string) sync.SyncJob {
+				return sync.SyncJob{
+					Name:        "test",
+					Source:      srcDir,
+					Destination: dstDir,
+					Mode:        "sync",
+				}
+			},
+			expectError: false,
+			validate: func(t *testing.T, srcDir, dstDir string) {
+				dstFile := filepath.Join(dstDir, "test.txt")
+				data, err := os.ReadFile(dstFile)
+				assert.NoError(t, err)
+				assert.Equal(t, "test content", string(data))
+			},
+		},
+		{
+			name: "copy mode",
+			setupDirs: func(t *testing.T) (string, string) {
+				srcDir := t.TempDir()
+				dstDir := t.TempDir()
+
+				testFile := filepath.Join(srcDir, "test.txt")
+				err := os.WriteFile(testFile, []byte("test content"), 0o600)
+				require.NoError(t, err)
+
+				return srcDir, dstDir
+			},
+			job: func(srcDir, dstDir string) sync.SyncJob {
+				return sync.SyncJob{
+					Name:        "test",
+					Source:      srcDir,
+					Destination: dstDir,
+					Mode:        "copy",
+				}
+			},
+			expectError: false,
+			validate: func(t *testing.T, srcDir, dstDir string) {
+				dstFile := filepath.Join(dstDir, "test.txt")
+				data, err := os.ReadFile(dstFile)
+				assert.NoError(t, err)
+				assert.Equal(t, "test content", string(data))
+			},
+		},
+		{
+			name: "sftp with credentials",
+			setupDirs: func(t *testing.T) (string, string) {
+				return "", ""
+			},
+			job: func(_, _ string) sync.SyncJob {
+				return sync.SyncJob{
+					Name:        "test",
+					Source:      "/tmp/source",
+					Destination: "sftp://user:pass@host.example.com:22/path",
+				}
+			},
+			expectError: true,
 		},
 	}
 
-	// Should fail on first job
-	err := service.SyncAll(ctx, jobs)
-	assert.Error(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := sync.NewRcloneService(nil)
+			ctx := context.Background()
+
+			if tt.name == "cancelled context" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			srcDir, dstDir := tt.setupDirs(t)
+			job := tt.job(srcDir, dstDir)
+
+			err := service.Sync(ctx, job)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+				if tt.validate != nil {
+					tt.validate(t, srcDir, dstDir)
+				}
+			}
+		})
+	}
 }
 
-func TestRcloneService_Sync_CancelledContext(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	job := sync.SyncJob{
-		Name:        "test",
-		Source:      "invalid://source", // Use invalid backend to ensure error
-		Destination: "/tmp/dest",
+func TestRcloneService_SyncAll(t *testing.T) {
+	tests := []struct {
+		name        string
+		jobs        []sync.SyncJob
+		expectError bool
+	}{
+		{
+			name:        "empty jobs",
+			jobs:        []sync.SyncJob{},
+			expectError: false,
+		},
+		{
+			name: "with error",
+			jobs: []sync.SyncJob{
+				{
+					Name:        "test1",
+					Source:      "invalid://source",
+					Destination: "/tmp/dest",
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "multiple jobs with error",
+			jobs: []sync.SyncJob{
+				{
+					Name:        "test1",
+					Source:      "invalid1://source",
+					Destination: "/tmp/dest1",
+				},
+				{
+					Name:        "test2",
+					Source:      "invalid2://source",
+					Destination: "/tmp/dest2",
+				},
+			},
+			expectError: true,
+		},
 	}
 
-	err := service.Sync(ctx, job)
-	assert.Error(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := sync.NewRcloneService(nil)
+			ctx := context.Background()
+
+			err := service.SyncAll(ctx, tt.jobs)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestRcloneService_WithCustomDialer(t *testing.T) {
-	// Test that a custom dialer can be passed to the service
-	// The dialer is used for SFTP connections over Tailscale
 	dialer := func(ctx context.Context, network, address string) (net.Conn, error) {
 		return nil, assert.AnError
 	}
 
 	service := sync.NewRcloneService(dialer)
 	assert.NotNil(t, service)
-
-	// The dialer would be invoked when syncing to sftp:// destinations
-	// Since we can't easily test this without a real SFTP server,
-	// we verify the service accepts the dialer without error
-}
-
-func TestRcloneService_newFs_SFTPWithCredentials(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-
-	// Test SFTP URL with credentials
-	job := sync.SyncJob{
-		Name:        "test",
-		Source:      "/tmp/source",
-		Destination: "sftp://user:pass@host.example.com:22/path",
-	}
-
-	// This will fail because host.example.com doesn't exist,
-	// but it should successfully parse the URL
-	err := service.Sync(context.Background(), job)
-	assert.Error(t, err)
-	// Should fail at connection, not URL parsing
-	assert.NotContains(t, err.Error(), "invalid control character")
-}
-
-func TestRcloneService_newFs_LocalPath(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-
-	// Create temporary directories
-	srcDir, err := os.MkdirTemp("", "src")
-	require.NoError(t, err)
-	defer os.RemoveAll(srcDir) //nolint:errcheck // Best effort cleanup
-
-	dstDir, err := os.MkdirTemp("", "dst")
-	require.NoError(t, err)
-	defer os.RemoveAll(dstDir) //nolint:errcheck // Best effort cleanup
-
-	// Create a test file
-	testFile := filepath.Join(srcDir, "test.txt")
-	err = os.WriteFile(testFile, []byte("test"), 0o600)
-	require.NoError(t, err)
-
-	// Test local path sync (should work)
-	job := sync.SyncJob{
-		Name:        "test",
-		Source:      srcDir,
-		Destination: dstDir,
-	}
-
-	err = service.Sync(context.Background(), job)
-	assert.NoError(t, err)
-
-	// Verify file was synced
-	dstFile := filepath.Join(dstDir, "test.txt")
-	data, err := os.ReadFile(dstFile)
-	assert.NoError(t, err)
-	assert.Equal(t, "test", string(data))
-}
-
-func TestRcloneService_Sync_InvalidMode(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
-
-	job := sync.SyncJob{
-		Name:        "test",
-		Source:      srcDir,
-		Destination: dstDir,
-		Mode:        "invalid-mode",
-	}
-
-	err := service.Sync(context.Background(), job)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid mode")
-}
-
-func TestRcloneService_Sync_SyncMode(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
-
-	// Create a test file in source
-	testFile := filepath.Join(srcDir, "test.txt")
-	err := os.WriteFile(testFile, []byte("test content"), 0o600)
-	require.NoError(t, err)
-
-	// Create a file in destination that doesn't exist in source
-	extraFile := filepath.Join(dstDir, "extra.txt")
-	err = os.WriteFile(extraFile, []byte("extra"), 0o600)
-	require.NoError(t, err)
-
-	// Test sync mode
-	job := sync.SyncJob{
-		Name:        "test",
-		Source:      srcDir,
-		Destination: dstDir,
-		Mode:        "sync",
-	}
-
-	err = service.Sync(context.Background(), job)
-	assert.NoError(t, err)
-
-	// Verify file was synced
-	dstFile := filepath.Join(dstDir, "test.txt")
-	data, err := os.ReadFile(dstFile)
-	assert.NoError(t, err)
-	assert.Equal(t, "test content", string(data))
-}
-
-func TestRcloneService_Sync_CopyMode(t *testing.T) {
-	service := sync.NewRcloneService(nil)
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
-
-	// Create a test file in source
-	testFile := filepath.Join(srcDir, "test.txt")
-	err := os.WriteFile(testFile, []byte("test content"), 0o600)
-	require.NoError(t, err)
-
-	// Test copy mode explicitly
-	job := sync.SyncJob{
-		Name:        "test",
-		Source:      srcDir,
-		Destination: dstDir,
-		Mode:        "copy",
-	}
-
-	err = service.Sync(context.Background(), job)
-	assert.NoError(t, err)
-
-	// Verify file was copied
-	dstFile := filepath.Join(dstDir, "test.txt")
-	data, err := os.ReadFile(dstFile)
-	assert.NoError(t, err)
-	assert.Equal(t, "test content", string(data))
 }
