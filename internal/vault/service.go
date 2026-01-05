@@ -3,69 +3,56 @@ package vault
 import (
 	"context"
 	"fmt"
+	"os"
 )
 
-// VaultService provides high-level vault operations combining SecretStore and BitwardenClient
+// VaultService provides high-level vault operations using SecretStore
 //
 //nolint:revive // VaultService stuttering is intentional for clarity
 type VaultService struct {
-	store     SecretStore
-	bitwarden BitwardenClient
+	store SecretStore
 }
 
 // NewVaultService creates a new VaultService
-func NewVaultService(store SecretStore, bitwarden BitwardenClient) *VaultService {
+func NewVaultService(store SecretStore) *VaultService {
 	return &VaultService{
-		store:     store,
-		bitwarden: bitwarden,
+		store: store,
 	}
 }
 
-// GetBitwardenSecrets retrieves secrets from Bitwarden vault
-// It authenticates using the stored access token and fetches the specified secrets
-func (v *VaultService) GetBitwardenSecrets(ctx context.Context, secretNames ...string) (map[string]string, error) {
-	// Get Bitwarden access token from keychain
-	accessToken, err := v.store.Get(ctx, BitwardenTokenKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Bitwarden token from keychain: %w", err)
-	}
-
-	// Authenticate with Bitwarden
-	if err := v.bitwarden.Authenticate(ctx, accessToken); err != nil {
-		return nil, fmt.Errorf("failed to authenticate with Bitwarden: %w", err)
-	}
-
-	// Fetch all requested secrets
-	secrets := make(map[string]string)
-	for _, name := range secretNames {
-		value, err := v.bitwarden.GetSecret(ctx, name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get secret %s: %w", name, err)
-		}
-		secrets[name] = value
-	}
-
-	return secrets, nil
-}
-
-// GetTailscaleAuthKey retrieves the Tailscale authentication key from Bitwarden
+// GetTailscaleAuthKey retrieves the Tailscale auth key from keyring or environment variable
 func (v *VaultService) GetTailscaleAuthKey(ctx context.Context) (string, error) {
-	secrets, err := v.GetBitwardenSecrets(ctx, TailscaleAuthKeyItem)
-	if err != nil {
-		return "", err
+	// Check environment variable first (for testing/development)
+	if envKey := os.Getenv("TS_AUTHKEY"); envKey != "" {
+		return envKey, nil
 	}
-	return secrets[TailscaleAuthKeyItem], nil
+
+	// Try to get from keyring
+	key, err := v.store.Get(ctx, TailscaleAuthKeyItem)
+	if err != nil {
+		return "", fmt.Errorf("tailscale auth key not found in keyring (run 'vanish setup' or set TS_AUTHKEY environment variable): %w", err)
+	}
+	return key, nil
 }
 
-// GetNASCredentials retrieves the NAS credentials from Bitwarden
+// GetNASCredentials retrieves the NAS credentials from keyring or environment variable
 // Returns username and password separately
 func (v *VaultService) GetNASCredentials(ctx context.Context) (username, password string, err error) {
-	secrets, err := v.GetBitwardenSecrets(ctx, NASCredsItem)
-	if err != nil {
-		return "", "", err
+	// Check environment variable first (for testing/development)
+	if envCreds := os.Getenv("NAS_CREDS"); envCreds != "" {
+		username, password, err := parseCredentials(envCreds)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to parse NAS_CREDS environment variable: %w", err)
+		}
+		return username, password, nil
 	}
 
-	creds := secrets[NASCredsItem]
+	// Try to get from keyring
+	creds, err := v.store.Get(ctx, NASCredsItem)
+	if err != nil {
+		return "", "", fmt.Errorf("NAS credentials not found in keyring (run 'vanish setup' or set NAS_CREDS environment variable): %w", err)
+	}
+
 	// Parse the credentials in format "username:password"
 	username, password, err = parseCredentials(creds)
 	if err != nil {
@@ -86,7 +73,7 @@ func parseCredentials(creds string) (username, password string, err error) {
 	return "", "", fmt.Errorf("invalid credential format, expected 'username:password'")
 }
 
-// Close closes the Bitwarden client
+// Close closes the vault service and cleans up resources
 func (v *VaultService) Close() error {
-	return v.bitwarden.Close()
+	return nil
 }

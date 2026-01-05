@@ -10,6 +10,7 @@ type SyncJob struct {
 	Name        string
 	Source      string
 	Destination string
+	Mode        string // "copy" (default) or "sync" (destructive)
 }
 
 // SyncService defines the interface for executing sync operations

@@ -1,4 +1,4 @@
-.PHONY: test lint install-lint install-mockery update-mocks fmt fmt-check build build-all build-linux build-darwin build-windows clean
+.PHONY: test test-integration test-integration-build lint install-lint install-mockery update-mocks fmt fmt-check build build-all build-linux build-darwin build-windows clean help
 
 # Go parameters
 GOCMD=go
@@ -18,19 +18,31 @@ CMD_PATH=./cmd/vanish
 LDFLAGS=-ldflags="-w -s"
 
 # Linter version
-GOLANGCI_LINT_VERSION=v1.61.0
+GOLANGCI_LINT_VERSION=latest
 
 # Mockery version
 MOCKERY_VERSION=v3.6.1
 
-# CGO flags for Bitwarden SDK
-export CGO_ENABLED=1
-export CGO_LDFLAGS=-lm
-
 # Test with coverage
 test:
-	$(GOTEST) -v -race -coverprofile=coverage.out ./...
+	$(GOTEST) -v -coverprofile=coverage.out -coverpkg=./internal/...,./pkg/...,./cmd/... ./...
 	$(GOCMD) tool cover -func=coverage.out
+
+# Test with race detector (no coverage)
+test-race:
+	$(GOTEST) -v -race ./...
+
+# Integration tests using testcontainers-go
+test-integration:
+	@echo "Running integration tests with testcontainers-go..."
+	@if [ -z "$$TS_TEST_AUTHKEY" ]; then \
+		echo "Warning: TS_TEST_AUTHKEY not set. Some tests will be skipped."; \
+	fi
+	$(GOTEST) -v -tags=integration ./test/integration/... -timeout=15m
+
+test-integration-build:
+	@echo "Building integration test Docker images..."
+	cd test/integration && docker build -t vanish-test-nas:latest -f Dockerfile.nas .
 
 # Run linter
 lint:
@@ -74,53 +86,41 @@ build-all: build-linux
 	@echo "Run 'make build-all-docker' to build all platforms using Docker."
 	@echo "Linux build complete in $(BINARY_DIR)/"
 
-# Build for Linux (amd64) - native build on Linux
+# Build for Linux (amd64) - pure Go, no CGO needed
 build-linux:
 	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=1 CGO_LDFLAGS="-lm" GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
+	GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
 	@echo "Built $(BINARY_DIR)/$(BINARY_NAME)-linux-amd64"
 
-# Build for macOS using Docker (requires osxcross SDK - complex setup)
-# For now, macOS builds should be done on a Mac or via GitHub Actions
-build-darwin-docker:
-	@echo "⚠️  macOS cross-compilation with CGO requires osxcross SDK."
-	@echo "    Build on macOS directly or use GitHub Actions."
-	@echo ""
-	@echo "    On macOS, run: make build-darwin"
-
-# Native macOS build (run on macOS only)
+# Build for macOS (pure Go, no CGO needed - can cross-compile from Linux!)
 build-darwin:
 	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=1 CGO_LDFLAGS="-lm" GOOS=darwin GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
-	CGO_ENABLED=1 CGO_LDFLAGS="-lm" GOOS=darwin GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
+	GOOS=darwin GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
+	GOOS=darwin GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
 	@echo "Built $(BINARY_DIR)/$(BINARY_NAME)-darwin-amd64"
 	@echo "Built $(BINARY_DIR)/$(BINARY_NAME)-darwin-arm64"
 
-# Build for Windows using Docker
-build-windows-docker:
+# Legacy alias for compatibility
+build-darwin-docker: build-darwin
+	@echo "Note: Docker no longer required for macOS builds (pure Go now)"
+
+# Build for Windows (pure Go, no CGO needed - no Docker required!)
+build-windows:
 	mkdir -p $(BINARY_DIR)
-	docker run --rm -v $(PWD):/app -w /app \
-		--entrypoint "" \
-		-e CGO_ENABLED=1 \
-		-e GOOS=windows \
-		-e GOARCH=amd64 \
-		-e CC=x86_64-w64-mingw32-gcc \
-		-e CXX=x86_64-w64-mingw32-g++ \
-		goreleaser/goreleaser-cross:latest \
-		go build -buildvcs=false $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
+	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
 	@echo "Built $(BINARY_DIR)/$(BINARY_NAME)-windows-amd64.exe"
 
-# Build all platforms using Docker
-build-all-docker: build-linux build-darwin-docker build-windows-docker
+# Build all platforms (pure Go - no Docker needed!)
+build-all: build-linux build-darwin build-windows
 	@echo "All builds complete in $(BINARY_DIR)/"
 
 # Build static binary (alias for build-linux)
 build: build-linux
 
-# Build for current platform (uses system CGO)
+# Build for current platform (pure Go)
 build-local:
 	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=1 CGO_LDFLAGS="-lm" $(GOBUILD) -o $(BINARY_DIR)/$(BINARY_NAME) $(CMD_PATH)
+	$(GOBUILD) $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME) $(CMD_PATH)
 	@echo "Binary built at $(BINARY_DIR)/$(BINARY_NAME)"
 
 # Clean build artifacts
@@ -142,6 +142,8 @@ run:
 help:
 	@echo "Available targets:"
 	@echo "  test              - Run tests with coverage"
+	@echo "  test-integration  - Run integration tests (requires Docker & TS_TEST_AUTHKEY)"
+	@echo "  test-integration-build - Build Docker images for integration tests"
 	@echo "  lint              - Run golangci-lint"
 	@echo "  fmt               - Format code with gofmt"
 	@echo "  fmt-check         - Check if code needs formatting (CI)"
