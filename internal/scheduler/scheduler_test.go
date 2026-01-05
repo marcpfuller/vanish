@@ -12,202 +12,197 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewScheduler(t *testing.T) {
-	// Create dependencies
-	store, err := vault.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+func TestScheduler_Lifecycle(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "new scheduler",
+			run: func(t *testing.T) {
+				store, err := vault.NewFileStore(t.TempDir())
+				require.NoError(t, err)
+				vaultSvc := vault.NewVaultService(store)
+				tsProvider := network.NewTsnetProvider()
+				syncSvc := sync.NewRcloneService(tsProvider.Dial)
+
+				sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
+
+				assert.NotNil(t, sched)
+				assert.Equal(t, "./config.yaml", sched.configPath)
+				assert.NotNil(t, sched.cron)
+			},
+		},
+		{
+			name: "next run after start",
+			run: func(t *testing.T) {
+				store, err := vault.NewFileStore(t.TempDir())
+				require.NoError(t, err)
+				vaultSvc := vault.NewVaultService(store)
+				tsProvider := network.NewTsnetProvider()
+				syncSvc := sync.NewRcloneService(tsProvider.Dial)
+
+				sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
+
+				nextRun := sched.NextRun()
+				assert.True(t, nextRun.IsZero())
+
+				err = sched.Start(context.Background(), "0 0 * * *")
+				require.NoError(t, err)
+				defer sched.Stop()
+
+				nextRun = sched.NextRun()
+				assert.False(t, nextRun.IsZero())
+				assert.True(t, nextRun.After(time.Now()))
+			},
+		},
+		{
+			name: "stop after start",
+			run: func(t *testing.T) {
+				store, err := vault.NewFileStore(t.TempDir())
+				require.NoError(t, err)
+				vaultSvc := vault.NewVaultService(store)
+				tsProvider := network.NewTsnetProvider()
+				syncSvc := sync.NewRcloneService(tsProvider.Dial)
+
+				sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
+
+				err = sched.Start(context.Background(), "0 0 * * *")
+				require.NoError(t, err)
+
+				nextRun := sched.NextRun()
+				assert.False(t, nextRun.IsZero())
+
+				sched.Stop()
+			},
+		},
+		{
+			name: "next run before start",
+			run: func(t *testing.T) {
+				store, err := vault.NewFileStore(t.TempDir())
+				require.NoError(t, err)
+				vaultSvc := vault.NewVaultService(store)
+				tsProvider := network.NewTsnetProvider()
+				syncSvc := sync.NewRcloneService(tsProvider.Dial)
+
+				sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
+
+				nextRun := sched.NextRun()
+				assert.True(t, nextRun.IsZero(), "NextRun should be zero before Start")
+			},
+		},
+		{
+			name: "stop without start",
+			run: func(t *testing.T) {
+				store, err := vault.NewFileStore(t.TempDir())
+				require.NoError(t, err)
+				vaultSvc := vault.NewVaultService(store)
+				tsProvider := network.NewTsnetProvider()
+				syncSvc := sync.NewRcloneService(tsProvider.Dial)
+
+				sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
+
+				sched.Stop()
+			},
+		},
+		{
+			name: "multiple starts",
+			run: func(t *testing.T) {
+				store, err := vault.NewFileStore(t.TempDir())
+				require.NoError(t, err)
+				vaultSvc := vault.NewVaultService(store)
+				tsProvider := network.NewTsnetProvider()
+				syncSvc := sync.NewRcloneService(tsProvider.Dial)
+
+				sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
+
+				err = sched.Start(context.Background(), "0 0 * * *")
+				require.NoError(t, err)
+				defer sched.Stop()
+
+				err = sched.Start(context.Background(), "0 1 * * *")
+				require.NoError(t, err)
+
+				entries := sched.cron.Entries()
+				assert.NotEmpty(t, entries)
+			},
+		},
 	}
-	vaultSvc := vault.NewVaultService(store)
-	tsProvider := network.NewTsnetProvider()
-	syncSvc := sync.NewRcloneService(tsProvider.Dial)
 
-	// Create scheduler
-	sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
-
-	if sched == nil {
-		t.Fatal("NewScheduler returned nil")
-	}
-
-	if sched.configPath != "./config.yaml" {
-		t.Errorf("Expected configPath './config.yaml', got %s", sched.configPath)
-	}
-
-	if sched.cron == nil {
-		t.Error("Expected cron to be initialized")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.run(t)
+		})
 	}
 }
 
-func TestScheduler_StartWithEmptyCron(t *testing.T) {
-	store, err := vault.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	vaultSvc := vault.NewVaultService(store)
-	tsProvider := network.NewTsnetProvider()
-	syncSvc := sync.NewRcloneService(tsProvider.Dial)
-
-	sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
-
-	// Test with empty cron expression
-	err = sched.Start(context.Background(), "")
-	if err == nil {
-		t.Error("Expected error for empty cron expression, got nil")
-	}
-}
-
-func TestScheduler_StartWithInvalidCron(t *testing.T) {
-	store, err := vault.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	vaultSvc := vault.NewVaultService(store)
-	tsProvider := network.NewTsnetProvider()
-	syncSvc := sync.NewRcloneService(tsProvider.Dial)
-
-	sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
-
-	// Test with invalid cron expression
-	err = sched.Start(context.Background(), "invalid cron")
-	if err == nil {
-		t.Error("Expected error for invalid cron expression, got nil")
-	}
-	defer sched.Stop()
-}
-
-func TestScheduler_NextRun(t *testing.T) {
-	store, err := vault.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	vaultSvc := vault.NewVaultService(store)
-	tsProvider := network.NewTsnetProvider()
-	syncSvc := sync.NewRcloneService(tsProvider.Dial)
-
-	sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
-
-	// Before starting, NextRun should return zero time
-	nextRun := sched.NextRun()
-	if !nextRun.IsZero() {
-		t.Errorf("Expected zero time before start, got %v", nextRun)
+func TestScheduler_Start(t *testing.T) {
+	tests := []struct {
+		name     string
+		cronExpr string
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name:     "empty cron expression",
+			cronExpr: "",
+			wantErr:  true,
+			errMsg:   "cron schedule is empty",
+		},
+		{
+			name:     "invalid cron expression",
+			cronExpr: "invalid cron",
+			wantErr:  true,
+			errMsg:   "failed to add cron job",
+		},
+		{
+			name:     "valid daily cron",
+			cronExpr: "0 0 * * *",
+			wantErr:  false,
+		},
+		{
+			name:     "valid hourly cron",
+			cronExpr: "0 * * * *",
+			wantErr:  false,
+		},
+		{
+			name:     "valid every minute cron",
+			cronExpr: "* * * * *",
+			wantErr:  false,
+		},
 	}
 
-	// Start with a valid cron expression
-	err = sched.Start(context.Background(), "0 0 * * *")
-	if err != nil {
-		t.Fatalf("Failed to start scheduler: %v", err)
-	}
-	defer sched.Stop()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := vault.NewFileStore(t.TempDir())
+			require.NoError(t, err)
+			vaultSvc := vault.NewVaultService(store)
+			tsProvider := network.NewTsnetProvider()
+			syncSvc := sync.NewRcloneService(tsProvider.Dial)
 
-	// After starting, NextRun should return a future time
-	nextRun = sched.NextRun()
-	if nextRun.IsZero() {
-		t.Error("Expected non-zero time after start")
-	}
+			sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
+			defer sched.Stop()
 
-	if !nextRun.After(time.Now()) {
-		t.Error("Expected NextRun to be in the future")
-	}
-}
+			err = sched.Start(context.Background(), tt.cronExpr)
 
-func TestScheduler_Stop(t *testing.T) {
-	store, err := vault.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	vaultSvc := vault.NewVaultService(store)
-	tsProvider := network.NewTsnetProvider()
-	syncSvc := sync.NewRcloneService(tsProvider.Dial)
-
-	sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
-
-	// Start scheduler
-	err = sched.Start(context.Background(), "0 0 * * *")
-	if err != nil {
-		t.Fatalf("Failed to start scheduler: %v", err)
-	}
-
-	// Verify it's running
-	nextRun := sched.NextRun()
-	if nextRun.IsZero() {
-		t.Error("Expected non-zero NextRun before stop")
-	}
-
-	// Stop should not panic
-	sched.Stop()
-
-	// After stop, cron context should be done (entries may still exist in memory)
-	// Just verify Stop doesn't panic - that's the main point of this test
-}
-
-func TestScheduler_NextRun_BeforeStart(t *testing.T) {
-	store, err := vault.NewFileStore(t.TempDir())
-	require.NoError(t, err)
-	vaultSvc := vault.NewVaultService(store)
-	tsProvider := network.NewTsnetProvider()
-	syncSvc := sync.NewRcloneService(tsProvider.Dial)
-
-	sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
-
-	// NextRun before start should return zero time
-	nextRun := sched.NextRun()
-	assert.True(t, nextRun.IsZero(), "NextRun should be zero before Start")
-}
-
-func TestScheduler_Stop_WithoutStart(t *testing.T) {
-	store, err := vault.NewFileStore(t.TempDir())
-	require.NoError(t, err)
-	vaultSvc := vault.NewVaultService(store)
-	tsProvider := network.NewTsnetProvider()
-	syncSvc := sync.NewRcloneService(tsProvider.Dial)
-
-	sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
-
-	// Calling Stop without Start should not panic
-	sched.Stop()
-}
-
-func TestScheduler_MultipleStarts(t *testing.T) {
-	store, err := vault.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	vaultSvc := vault.NewVaultService(store)
-	tsProvider := network.NewTsnetProvider()
-	syncSvc := sync.NewRcloneService(tsProvider.Dial)
-
-	sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
-
-	// Start scheduler
-	err = sched.Start(context.Background(), "0 0 * * *")
-	if err != nil {
-		t.Fatalf("Failed to start scheduler: %v", err)
-	}
-	defer sched.Stop()
-
-	// Starting again should add another job
-	err = sched.Start(context.Background(), "0 1 * * *")
-	if err != nil {
-		t.Fatalf("Failed to start scheduler second time: %v", err)
-	}
-
-	// Should have entries
-	entries := sched.cron.Entries()
-	if len(entries) == 0 {
-		t.Error("Expected cron entries after start")
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+				// Verify NextRun is set for valid cron
+				nextRun := sched.NextRun()
+				assert.False(t, nextRun.IsZero())
+				assert.True(t, nextRun.After(time.Now()))
+			}
+		})
 	}
 }
 
 func TestScheduler_ValidCronExpressions(t *testing.T) {
-	store, err := vault.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	vaultSvc := vault.NewVaultService(store)
-	tsProvider := network.NewTsnetProvider()
-	syncSvc := sync.NewRcloneService(tsProvider.Dial)
-
-	testCases := []struct {
+	tests := []struct {
 		name string
 		cron string
 	}{
@@ -219,19 +214,22 @@ func TestScheduler_ValidCronExpressions(t *testing.T) {
 		{"sunday midnight", "0 0 * * 0"},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := vault.NewFileStore(t.TempDir())
+			require.NoError(t, err)
+			vaultSvc := vault.NewVaultService(store)
+			tsProvider := network.NewTsnetProvider()
+			syncSvc := sync.NewRcloneService(tsProvider.Dial)
+
 			sched := NewScheduler(vaultSvc, tsProvider, syncSvc, "./config.yaml")
-			err := sched.Start(context.Background(), tc.cron)
-			if err != nil {
-				t.Errorf("Failed to start with cron %q: %v", tc.cron, err)
-			}
 			defer sched.Stop()
 
+			err = sched.Start(context.Background(), tt.cron)
+			require.NoError(t, err)
+
 			nextRun := sched.NextRun()
-			if nextRun.IsZero() {
-				t.Errorf("Expected non-zero NextRun for cron %q", tc.cron)
-			}
+			assert.False(t, nextRun.IsZero(), "Expected non-zero NextRun for cron %q", tt.cron)
 		})
 	}
 }

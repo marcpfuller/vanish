@@ -5,45 +5,117 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestDetectKeychainBackend_Windows(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific test")
+func TestDetectKeychainBackend(t *testing.T) {
+	tests := []struct {
+		name         string
+		goos         string
+		wantContains string
+		skip         bool
+	}{
+		{
+			name:         "windows",
+			goos:         "windows",
+			wantContains: "Windows Credential Manager",
+			skip:         runtime.GOOS != "windows",
+		},
+		{
+			name:         "darwin",
+			goos:         "darwin",
+			wantContains: "macOS Keychain",
+			skip:         runtime.GOOS != "darwin",
+		},
+		{
+			name:         "linux",
+			goos:         "linux",
+			wantContains: "Linux",
+			skip:         runtime.GOOS != "linux",
+		},
 	}
-	backend := DetectKeychainBackend()
-	if backend != "Windows Credential Manager" {
-		t.Errorf("Expected 'Windows Credential Manager', got %q", backend)
-	}
-}
 
-func TestDetectKeychainBackend_Darwin(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("Skipping macOS-specific test")
-	}
-	backend := DetectKeychainBackend()
-	if backend != "macOS Keychain" {
-		t.Errorf("Expected 'macOS Keychain', got %q", backend)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.skip {
+				t.Skipf("Skipping %s-specific test on %s", tt.goos, runtime.GOOS)
+			}
 
-func TestDetectKeychainBackend_Linux(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Skipping Linux-specific test")
-	}
-	backend := DetectKeychainBackend()
-	// Should contain "Linux" in the result
-	if !contains(backend, "Linux") {
-		t.Errorf("Expected backend to contain 'Linux', got %q", backend)
+			backend := DetectKeychainBackend()
+			assert.Contains(t, backend, tt.wantContains)
+		})
 	}
 }
 
 func TestIsWSL_EnvVars(t *testing.T) {
+	tests := []struct {
+		name       string
+		distroName string
+		interop    string
+		wantWSL    bool
+	}{
+		{
+			name:       "WSL_DISTRO_NAME set",
+			distroName: "Ubuntu",
+			interop:    "",
+			wantWSL:    true,
+		},
+		{
+			name:       "WSL_INTEROP set",
+			distroName: "",
+			interop:    "/run/WSL/8_interop",
+			wantWSL:    true,
+		},
+		{
+			name:       "both set",
+			distroName: "Ubuntu",
+			interop:    "/run/WSL/8_interop",
+			wantWSL:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save and restore env vars
+			origDistro := os.Getenv("WSL_DISTRO_NAME")
+			origInterop := os.Getenv("WSL_INTEROP")
+			t.Cleanup(func() {
+				if origDistro != "" {
+					require.NoError(t, os.Setenv("WSL_DISTRO_NAME", origDistro))
+				} else {
+					require.NoError(t, os.Unsetenv("WSL_DISTRO_NAME"))
+				}
+				if origInterop != "" {
+					require.NoError(t, os.Setenv("WSL_INTEROP", origInterop))
+				} else {
+					require.NoError(t, os.Unsetenv("WSL_INTEROP"))
+				}
+			})
+
+			// Set test env vars
+			if tt.distroName != "" {
+				require.NoError(t, os.Setenv("WSL_DISTRO_NAME", tt.distroName))
+			} else {
+				require.NoError(t, os.Unsetenv("WSL_DISTRO_NAME"))
+			}
+			if tt.interop != "" {
+				require.NoError(t, os.Setenv("WSL_INTEROP", tt.interop))
+			} else {
+				require.NoError(t, os.Unsetenv("WSL_INTEROP"))
+			}
+
+			result := isWSL()
+			assert.Equal(t, tt.wantWSL, result)
+		})
+	}
+}
+
+func TestIsWSL_BothUnset(t *testing.T) {
 	// Save original env vars
 	origDistro := os.Getenv("WSL_DISTRO_NAME")
 	origInterop := os.Getenv("WSL_INTEROP")
-	defer func() {
+	t.Cleanup(func() {
 		if origDistro != "" {
 			require.NoError(t, os.Setenv("WSL_DISTRO_NAME", origDistro))
 		} else {
@@ -54,21 +126,7 @@ func TestIsWSL_EnvVars(t *testing.T) {
 		} else {
 			require.NoError(t, os.Unsetenv("WSL_INTEROP"))
 		}
-	}()
-
-	// Test with WSL_DISTRO_NAME
-	require.NoError(t, os.Setenv("WSL_DISTRO_NAME", "Ubuntu"))
-	require.NoError(t, os.Unsetenv("WSL_INTEROP"))
-	if !isWSL() {
-		t.Error("Expected isWSL to return true with WSL_DISTRO_NAME set")
-	}
-
-	// Test with WSL_INTEROP
-	require.NoError(t, os.Unsetenv("WSL_DISTRO_NAME"))
-	require.NoError(t, os.Setenv("WSL_INTEROP", "/run/WSL/8_interop"))
-	if !isWSL() {
-		t.Error("Expected isWSL to return true with WSL_INTEROP set")
-	}
+	})
 
 	// Test with both unset (will check /proc/version if on Linux)
 	require.NoError(t, os.Unsetenv("WSL_DISTRO_NAME"))
@@ -77,103 +135,102 @@ func TestIsWSL_EnvVars(t *testing.T) {
 	_ = isWSL()
 }
 
-func TestGetWSLKeychainHelp_NotWSL(t *testing.T) {
-	// Save original env vars
-	origDistro := os.Getenv("WSL_DISTRO_NAME")
-	origInterop := os.Getenv("WSL_INTEROP")
-	defer func() {
-		if origDistro != "" {
-			require.NoError(t, os.Setenv("WSL_DISTRO_NAME", origDistro))
-		}
-		if origInterop != "" {
-			require.NoError(t, os.Setenv("WSL_INTEROP", origInterop))
-		}
-	}()
-
-	// Unset WSL env vars
-	require.NoError(t, os.Unsetenv("WSL_DISTRO_NAME"))
-	require.NoError(t, os.Unsetenv("WSL_INTEROP"))
-
-	// On non-WSL systems, should return empty string (unless /proc/version says otherwise)
-	help := GetWSLKeychainHelp()
-	// We can't assert much here since it depends on the actual environment
-	// Just verify it doesn't panic
-	_ = help
-}
-
-func TestGetWSLKeychainHelp_WithWSL(t *testing.T) {
-	// Save original env vars
-	origDistro := os.Getenv("WSL_DISTRO_NAME")
-	defer func() {
-		if origDistro != "" {
-			require.NoError(t, os.Setenv("WSL_DISTRO_NAME", origDistro))
-		} else {
-			require.NoError(t, os.Unsetenv("WSL_DISTRO_NAME"))
-		}
-	}()
-
-	// Set WSL env var
-	require.NoError(t, os.Setenv("WSL_DISTRO_NAME", "Ubuntu"))
-
-	help := GetWSLKeychainHelp()
-	if help == "" {
-		t.Error("Expected non-empty help string for WSL")
-	}
-
-	// Should contain helpful information
-	if !contains(help, "WSL") {
-		t.Error("Expected help string to mention WSL")
-	}
-}
-
-func TestContains_EdgeCases(t *testing.T) {
+func TestGetWSLKeychainHelp(t *testing.T) {
 	tests := []struct {
-		name     string
-		s        string
-		substr   string
-		expected bool
+		name         string
+		distroName   string
+		wantContains string
+		wantEmpty    bool
 	}{
-		{"both empty", "", "", true},
-		{"empty substr", "hello", "", true},
-		{"empty string", "", "test", false},
-		{"single char match", "a", "a", true},
-		{"single char no match", "a", "b", false},
-		{"substr at end", "hello world", "world", true},
-		{"substr at start", "hello world", "hello", true},
+		{
+			name:         "with WSL",
+			distroName:   "Ubuntu",
+			wantContains: "WSL",
+			wantEmpty:    false,
+		},
+		{
+			name:       "without WSL",
+			distroName: "",
+			wantEmpty:  true, // On non-WSL/non-Linux systems
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := contains(tt.s, tt.substr)
-			if result != tt.expected {
-				t.Errorf("contains(%q, %q) = %v, expected %v", tt.s, tt.substr, result, tt.expected)
+			// Save and restore env vars
+			origDistro := os.Getenv("WSL_DISTRO_NAME")
+			t.Cleanup(func() {
+				if origDistro != "" {
+					require.NoError(t, os.Setenv("WSL_DISTRO_NAME", origDistro))
+				} else {
+					require.NoError(t, os.Unsetenv("WSL_DISTRO_NAME"))
+				}
+			})
+
+			// Set test env
+			if tt.distroName != "" {
+				require.NoError(t, os.Setenv("WSL_DISTRO_NAME", tt.distroName))
+			} else {
+				require.NoError(t, os.Unsetenv("WSL_DISTRO_NAME"))
+			}
+
+			help := GetWSLKeychainHelp()
+
+			if tt.wantEmpty && runtime.GOOS != "linux" {
+				assert.Empty(t, help)
+			} else if tt.wantContains != "" {
+				assert.Contains(t, help, tt.wantContains)
 			}
 		})
 	}
 }
 
-func TestIndexSubstring_EdgeCases(t *testing.T) {
-	tests := []struct {
-		name     string
-		s        string
-		substr   string
-		expected int
-	}{
-		{"both empty", "", "", 0},
-		{"empty substr in non-empty", "hello", "", 0},
-		{"empty string", "", "test", -1},
-		{"single char found", "a", "a", 0},
-		{"single char not found", "a", "b", -1},
-		{"at end", "abc", "c", 2},
-		{"at start", "abc", "a", 0},
-	}
+func TestStringHelpers(t *testing.T) {
+	t.Run("contains", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			s        string
+			substr   string
+			expected bool
+		}{
+			{"both empty", "", "", true},
+			{"empty substr", "hello", "", true},
+			{"empty string", "", "test", false},
+			{"single char match", "a", "a", true},
+			{"single char no match", "a", "b", false},
+			{"substr at end", "hello world", "world", true},
+			{"substr at start", "hello world", "hello", true},
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := indexSubstring(tt.s, tt.substr)
-			if result != tt.expected {
-				t.Errorf("indexSubstring(%q, %q) = %d, expected %d", tt.s, tt.substr, result, tt.expected)
-			}
-		})
-	}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := contains(tt.s, tt.substr)
+				assert.Equal(t, tt.expected, result)
+			})
+		}
+	})
+
+	t.Run("indexSubstring", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			s        string
+			substr   string
+			expected int
+		}{
+			{"both empty", "", "", 0},
+			{"empty substr in non-empty", "hello", "", 0},
+			{"empty string", "", "test", -1},
+			{"single char found", "a", "a", 0},
+			{"single char not found", "a", "b", -1},
+			{"at end", "abc", "c", 2},
+			{"at start", "abc", "a", 0},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := indexSubstring(tt.s, tt.substr)
+				assert.Equal(t, tt.expected, result)
+			})
+		}
+	})
 }

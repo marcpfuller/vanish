@@ -12,133 +12,149 @@ import (
 )
 
 func TestVaultService_GetTailscaleAuthKey(t *testing.T) {
-	ctx := context.Background()
-	mockStore := mocks.NewMockSecretStore(t)
+	tests := []struct {
+		name        string
+		envVar      string
+		envValue    string
+		setupMock   func(*mocks.MockSecretStore)
+		expectedKey string
+		expectError bool
+	}{
+		{
+			name:   "from keyring",
+			envVar: "",
+			setupMock: func(m *mocks.MockSecretStore) {
+				m.EXPECT().
+					Get(context.Background(), vault.TailscaleAuthKeyItem).
+					Return("tskey-auth-test123", nil).
+					Once()
+			},
+			expectedKey: "tskey-auth-test123",
+			expectError: false,
+		},
+		{
+			name:        "from environment",
+			envVar:      "TS_AUTHKEY",
+			envValue:    "tskey-from-env-123",
+			setupMock:   func(m *mocks.MockSecretStore) {},
+			expectedKey: "tskey-from-env-123",
+			expectError: false,
+		},
+	}
 
-	service := vault.NewVaultService(mockStore)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			mockStore := mocks.NewMockSecretStore(t)
 
-	// Setup expectations
-	expectedKey := "tskey-auth-test123"
-	mockStore.EXPECT().
-		Get(ctx, vault.TailscaleAuthKeyItem).
-		Return(expectedKey, nil).
-		Once()
+			if tt.envVar != "" {
+				require.NoError(t, os.Setenv(tt.envVar, tt.envValue))
+				defer func() { _ = os.Unsetenv(tt.envVar) }() //nolint:errcheck
+			}
 
-	// Execute
-	key, err := service.GetTailscaleAuthKey(ctx)
+			tt.setupMock(mockStore)
+			service := vault.NewVaultService(mockStore)
 
-	// Assert
-	require.NoError(t, err)
-	assert.Equal(t, expectedKey, key)
+			key, err := service.GetTailscaleAuthKey(ctx)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expectedKey, key)
+			}
+		})
+	}
 }
 
 func TestVaultService_GetNASCredentials(t *testing.T) {
-	ctx := context.Background()
-	mockStore := mocks.NewMockSecretStore(t)
+	tests := []struct {
+		name             string
+		envVar           string
+		envValue         string
+		setupMock        func(*mocks.MockSecretStore)
+		expectedUsername string
+		expectedPassword string
+		expectError      bool
+		errorContains    string
+	}{
+		{
+			name:   "from keyring",
+			envVar: "",
+			setupMock: func(m *mocks.MockSecretStore) {
+				m.EXPECT().
+					Get(context.Background(), vault.NASCredsItem).
+					Return("admin:SecurePassword123", nil).
+					Once()
+			},
+			expectedUsername: "admin",
+			expectedPassword: "SecurePassword123",
+			expectError:      false,
+		},
+		{
+			name:   "from keyring invalid format",
+			envVar: "",
+			setupMock: func(m *mocks.MockSecretStore) {
+				m.EXPECT().
+					Get(context.Background(), vault.NASCredsItem).
+					Return("no-colon-separator", nil).
+					Once()
+			},
+			expectError:   true,
+			errorContains: "invalid credential format",
+		},
+		{
+			name:             "from environment",
+			envVar:           "NAS_CREDS",
+			envValue:         "testuser:testpass",
+			setupMock:        func(m *mocks.MockSecretStore) {},
+			expectedUsername: "testuser",
+			expectedPassword: "testpass",
+			expectError:      false,
+		},
+		{
+			name:          "from environment invalid format",
+			envVar:        "NAS_CREDS",
+			envValue:      "invalid-no-colon",
+			setupMock:     func(m *mocks.MockSecretStore) {},
+			expectError:   true,
+			errorContains: "invalid credential format",
+		},
+	}
 
-	service := vault.NewVaultService(mockStore)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			mockStore := mocks.NewMockSecretStore(t)
 
-	// Setup expectations
-	creds := "admin:SecurePassword123"
-	mockStore.EXPECT().
-		Get(ctx, vault.NASCredsItem).
-		Return(creds, nil).
-		Once()
+			if tt.envVar != "" {
+				require.NoError(t, os.Setenv(tt.envVar, tt.envValue))
+				defer func() { _ = os.Unsetenv(tt.envVar) }() //nolint:errcheck
+			}
 
-	// Execute
-	username, password, err := service.GetNASCredentials(ctx)
+			tt.setupMock(mockStore)
+			service := vault.NewVaultService(mockStore)
 
-	// Assert
-	require.NoError(t, err)
-	assert.Equal(t, "admin", username)
-	assert.Equal(t, "SecurePassword123", password)
-}
+			username, password, err := service.GetNASCredentials(ctx)
 
-func TestVaultService_GetNASCredentials_InvalidFormat(t *testing.T) {
-	ctx := context.Background()
-	mockStore := mocks.NewMockSecretStore(t)
-
-	service := vault.NewVaultService(mockStore)
-
-	// Setup expectations - invalid format (no colon)
-	invalidCreds := "no-colon-separator"
-	mockStore.EXPECT().
-		Get(ctx, vault.NASCredsItem).
-		Return(invalidCreds, nil).
-		Once()
-
-	// Execute
-	_, _, err := service.GetNASCredentials(ctx)
-
-	// Assert
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid credential format")
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expectedUsername, username)
+				assert.Equal(t, tt.expectedPassword, password)
+			}
+		})
+	}
 }
 
 func TestVaultService_Close(t *testing.T) {
 	mockStore := mocks.NewMockSecretStore(t)
-
 	service := vault.NewVaultService(mockStore)
 
-	// Execute
 	err := service.Close()
-
-	// Assert - should be no-op and return nil
 	assert.NoError(t, err)
-}
-
-func TestVaultService_GetTailscaleAuthKey_FromEnv(t *testing.T) {
-	ctx := context.Background()
-	mockStore := mocks.NewMockSecretStore(t)
-
-	service := vault.NewVaultService(mockStore)
-
-	// Set environment variable
-	expectedKey := "tskey-from-env-123"
-	require.NoError(t, os.Setenv("TS_AUTHKEY", expectedKey))
-	defer func() { _ = os.Unsetenv("TS_AUTHKEY") }() //nolint:errcheck // test cleanup
-
-	// Execute - should use env var, no keyring access
-	key, err := service.GetTailscaleAuthKey(ctx)
-
-	// Assert
-	require.NoError(t, err)
-	assert.Equal(t, expectedKey, key)
-}
-
-func TestVaultService_GetNASCredentials_FromEnv(t *testing.T) {
-	ctx := context.Background()
-	mockStore := mocks.NewMockSecretStore(t)
-
-	service := vault.NewVaultService(mockStore)
-
-	// Set environment variable
-	require.NoError(t, os.Setenv("NAS_CREDS", "testuser:testpass"))
-	defer func() { _ = os.Unsetenv("NAS_CREDS") }() //nolint:errcheck // test cleanup
-
-	// Execute - should use env var, no keyring access
-	username, password, err := service.GetNASCredentials(ctx)
-
-	// Assert
-	require.NoError(t, err)
-	assert.Equal(t, "testuser", username)
-	assert.Equal(t, "testpass", password)
-}
-
-func TestVaultService_GetNASCredentials_FromEnv_InvalidFormat(t *testing.T) {
-	ctx := context.Background()
-	mockStore := mocks.NewMockSecretStore(t)
-
-	service := vault.NewVaultService(mockStore)
-
-	// Set invalid environment variable
-	require.NoError(t, os.Setenv("NAS_CREDS", "invalid-no-colon"))
-	defer func() { _ = os.Unsetenv("NAS_CREDS") }() //nolint:errcheck // test cleanup
-
-	// Execute
-	_, _, err := service.GetNASCredentials(ctx)
-
-	// Assert
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid credential format")
 }
