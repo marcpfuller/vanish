@@ -1,0 +1,21 @@
+# Default owner for everything in the repo
+* @marcpfuller
+
+# Workflows and CI/CD
+/.github/ @marcpfuller
+
+# Core sync and backup logic
+/internal/sync/ @marcpfuller
+/internal/cmd/ @marcpfuller
+
+# Security-sensitive components
+/internal/vault/ @marcpfuller
+/internal/network/ @marcpfuller
+
+# Configuration
+/pkg/config/ @marcpfuller
+config.yaml @marcpfuller
+config.example.yaml @marcpfuller
+
+# Documentation
+*.md @marcpfuller
